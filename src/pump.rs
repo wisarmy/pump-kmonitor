@@ -1,0 +1,340 @@
+use anyhow::{Context, Result};
+use base64::{Engine as _, engine::general_purpose};
+use futures_util::{SinkExt, StreamExt};
+use rust_decimal::Decimal;
+use serde_json::{Value, json};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tracing::{debug, error, info};
+
+use crate::constant::PUMP_PROGRAM;
+
+#[derive(Debug)]
+pub struct TradeEvent {
+    pub signature: String,
+    pub slot: u64,
+    pub success: bool,
+    pub mint: String,
+    pub user: String,
+    pub sol_amount: u64,
+    pub token_amount: u64,
+    pub is_buy: bool,
+    pub timestamp: i64,
+    pub virtual_sol_reserves: u64,
+    pub virtual_token_reserves: u64,
+    pub real_sol_reserves: u64,
+    pub real_token_reserves: u64,
+}
+
+#[derive(Debug)]
+pub struct TradeDetails {
+    pub sol_amount_formatted: Decimal,
+    pub token_amount_formatted: Decimal,
+    pub virtual_sol_formatted: Decimal,
+    pub virtual_token_formatted: Decimal,
+    pub real_sol_formatted: Decimal,
+    pub real_token_formatted: Decimal,
+    pub price: Decimal,
+    pub market_cap: Decimal,
+}
+
+pub async fn connect_websocket(rpc_ws_endpoint: &str) -> Result<()> {
+    let (ws_stream, _) = connect_async(rpc_ws_endpoint)
+        .await
+        .context("Failed to connect to WebSocket server")?;
+
+    info!("Connected to WebSocket server: sol websocket");
+
+    let (mut write, mut read) = ws_stream.split();
+
+    let logs_subscribe = json!({
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "logsSubscribe",
+          "params": [
+            {
+              "mentions": [ PUMP_PROGRAM ]
+            },
+            {
+              "commitment": "confirmed"
+            }
+          ]
+    });
+
+    tokio::spawn(async move {
+        let msg = Message::text(logs_subscribe.to_string());
+        write.send(msg).await.expect("Failed to send message");
+    });
+
+    while let Some(message) = read.next().await {
+        match message {
+            Ok(Message::Text(text)) => {
+                let response: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+                // check if response contains "method" field
+                if let Some(method) = response.get("method") {
+                    if method == "logsNotification" {
+                        if let Some(trade_event) = parse_trade_event(&response) {
+                            if let Some(details) = calculate_trade_details(&trade_event) {
+                                info!(
+                                    "🟢 {}: signature= {}, mint= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, market_cap= {:.2}, success= {}, time= {}",
+                                    if trade_event.is_buy { "Buy" } else { "Sell" },
+                                    trade_event.signature,
+                                    trade_event.mint,
+                                    trade_event.user,
+                                    details.sol_amount_formatted,
+                                    details.token_amount_formatted,
+                                    details.price,
+                                    details.market_cap,
+                                    trade_event.success,
+                                    // Convert timestamp to readable format
+                                    chrono::DateTime::from_timestamp(trade_event.timestamp, 0)
+                                        .map(|dt| dt
+                                            .with_timezone(&chrono::Local)
+                                            .format("%Y-%m-%d %H:%M:%S")
+                                            .to_string())
+                                        .unwrap_or_else(|| "Invalid timestamp".to_string())
+                                );
+                            } else {
+                                info!("🟡 Trade detected: {:#?}", trade_event);
+                            }
+                        } else {
+                            // Check if contains Pump instruction but parsing failed
+                            if contains_pump_instruction(&response) {
+                                debug!("Contains Pump instruction but parsing failed");
+                            }
+                        }
+                    }
+                } else {
+                    info!("Received subscription response: {:#?}", response);
+                }
+            }
+            Ok(Message::Close(close)) => {
+                info!("Connection closed: {:?}", close);
+                break;
+            }
+            Err(e) => {
+                error!("Error receiving message: {:?}", e);
+                break;
+            }
+            _ => {
+                info!("Unknown message");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_trade_event(response: &Value) -> Option<TradeEvent> {
+    // Extract params.result
+    let result = response.get("params")?.get("result")?;
+
+    let value = result.get("value")?;
+    let context = result.get("context")?;
+
+    // Get basic information
+    let signature = value.get("signature")?.as_str()?.to_string();
+    let slot = context.get("slot")?.as_u64()?;
+    let success = value.get("err").map(|v| v.is_null()).unwrap_or(false);
+
+    // Check if logs contain Buy/Sell instructions
+    let logs = value.get("logs")?.as_array()?;
+    let has_pump_instruction = logs.iter().any(|log| {
+        if let Some(log_str) = log.as_str() {
+            log_str.contains("Program log: Instruction: Buy")
+                || log_str.contains("Program log: Instruction: Sell")
+        } else {
+            false
+        }
+    });
+
+    if !has_pump_instruction {
+        return None;
+    }
+
+    // Extract and parse program data
+    for log in logs {
+        if let Some(log_str) = log.as_str() {
+            if log_str.starts_with("Program data: ") {
+                if let Some(data_str) = log_str.strip_prefix("Program data: ") {
+                    if let Some(trade_data) = decode_and_parse_program_data(data_str) {
+                        return Some(TradeEvent {
+                            signature,
+                            slot,
+                            success,
+                            mint: trade_data.0,
+                            user: trade_data.1,
+                            sol_amount: trade_data.2,
+                            token_amount: trade_data.3,
+                            is_buy: trade_data.4,
+                            timestamp: trade_data.5,
+                            virtual_sol_reserves: trade_data.6,
+                            virtual_token_reserves: trade_data.7,
+                            real_sol_reserves: trade_data.8,
+                            real_token_reserves: trade_data.9,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn decode_and_parse_program_data(
+    program_data: &str,
+) -> Option<(String, String, u64, u64, bool, i64, u64, u64, u64, u64)> {
+    // Decode base64 data
+    let decoded = general_purpose::STANDARD.decode(program_data).ok()?;
+
+    if decoded.len() < 129 {
+        return None;
+    }
+
+    // Skip first 8 bytes of event identifier
+    let _event_type = &decoded[..8];
+
+    // From 8th byte is mint address (32 bytes)
+    let mint_bytes = &decoded[8..40];
+    let mint = bs58::encode(mint_bytes).into_string();
+
+    let mut pos = 40;
+
+    // Read sol_amount (8 bytes)
+    let sol_amount = {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&decoded[pos..pos + 8]);
+        u64::from_le_bytes(bytes)
+    };
+    pos += 8;
+
+    // Read token_amount (8 bytes)
+    let token_amount = {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&decoded[pos..pos + 8]);
+        u64::from_le_bytes(bytes)
+    };
+    pos += 8;
+
+    // Read is_buy (1 byte)
+    let is_buy = decoded[pos] != 0;
+    pos += 1;
+
+    // Read user address (32 bytes)
+    let user_bytes = &decoded[pos..pos + 32];
+    let user = bs58::encode(user_bytes).into_string();
+    pos += 32;
+
+    // Read timestamp (8 bytes)
+    let timestamp = {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&decoded[pos..pos + 8]);
+        u64::from_le_bytes(bytes) as i64
+    };
+    pos += 8;
+
+    // Read virtual_sol_reserves (8 bytes)
+    let virtual_sol_reserves = {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&decoded[pos..pos + 8]);
+        u64::from_le_bytes(bytes)
+    };
+    pos += 8;
+
+    // Read virtual_token_reserves (8 bytes)
+    let virtual_token_reserves = {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&decoded[pos..pos + 8]);
+        u64::from_le_bytes(bytes)
+    };
+    pos += 8;
+
+    // Read real_sol_reserves (8 bytes)
+    let real_sol_reserves = {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&decoded[pos..pos + 8]);
+        u64::from_le_bytes(bytes)
+    };
+    pos += 8;
+
+    // Read real_token_reserves (8 bytes)
+    let real_token_reserves = {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&decoded[pos..pos + 8]);
+        u64::from_le_bytes(bytes)
+    };
+
+    info!(
+        "Decoded TradeEvent: sol_amount={}, token_amount={}, is_buy={}, user={}, timestamp={}",
+        sol_amount, token_amount, is_buy, user, timestamp
+    );
+
+    Some((
+        mint,
+        user,
+        sol_amount,
+        token_amount,
+        is_buy,
+        timestamp,
+        virtual_sol_reserves,
+        virtual_token_reserves,
+        real_sol_reserves,
+        real_token_reserves,
+    ))
+}
+
+fn calculate_trade_details(trade_event: &TradeEvent) -> Option<TradeDetails> {
+    // Use Decimal for precise calculations
+    let sol_divisor = Decimal::new(1_000_000_000, 0); // 10^9 for SOL
+    let token_divisor = Decimal::new(1_000_000, 0); // 10^6 for tokens
+    let total_supply = Decimal::new(1_000_000_000, 0); // 1B tokens total supply
+
+    let sol_amount_formatted = Decimal::from(trade_event.sol_amount) / sol_divisor;
+    let token_amount_formatted = Decimal::from(trade_event.token_amount) / token_divisor;
+    let virtual_sol_formatted = Decimal::from(trade_event.virtual_sol_reserves) / sol_divisor;
+    let virtual_token_formatted = Decimal::from(trade_event.virtual_token_reserves) / token_divisor;
+    let real_sol_formatted = Decimal::from(trade_event.real_sol_reserves) / sol_divisor;
+    let real_token_formatted = Decimal::from(trade_event.real_token_reserves) / token_divisor;
+
+    // Calculate price (SOL per token)
+    let price = if !token_amount_formatted.is_zero() {
+        sol_amount_formatted / token_amount_formatted
+    } else {
+        Decimal::ZERO
+    };
+
+    // Calculate market cap (assuming total supply of 1B tokens)
+    let market_cap = price * total_supply;
+
+    Some(TradeDetails {
+        sol_amount_formatted,
+        token_amount_formatted,
+        virtual_sol_formatted,
+        virtual_token_formatted,
+        real_sol_formatted,
+        real_token_formatted,
+        price,
+        market_cap,
+    })
+}
+
+fn contains_pump_instruction(response: &Value) -> bool {
+    if let Some(logs) = response
+        .get("params")
+        .and_then(|p| p.get("result"))
+        .and_then(|r| r.get("value"))
+        .and_then(|v| v.get("logs"))
+        .and_then(|l| l.as_array())
+    {
+        return logs.iter().any(|log| {
+            if let Some(log_str) = log.as_str() {
+                log_str.contains("Program log: Instruction: Buy")
+                    || log_str.contains("Program log: Instruction: Sell")
+            } else {
+                false
+            }
+        });
+    }
+    false
+}
