@@ -3,10 +3,13 @@ use base64::{Engine as _, engine::general_purpose};
 use futures_util::{SinkExt, StreamExt};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info};
 
 use crate::constant::PUMP_PROGRAM;
+use crate::kline::KLineManager;
 
 #[derive(Debug)]
 pub struct TradeEvent {
@@ -37,7 +40,10 @@ pub struct TradeDetails {
     pub market_cap: Decimal,
 }
 
-pub async fn connect_websocket(rpc_ws_endpoint: &str) -> Result<()> {
+pub async fn connect_websocket(
+    rpc_ws_endpoint: &str,
+    kline_manager: Arc<Mutex<KLineManager>>,
+) -> Result<()> {
     let (ws_stream, _) = connect_async(rpc_ws_endpoint)
         .await
         .context("Failed to connect to WebSocket server")?;
@@ -45,6 +51,19 @@ pub async fn connect_websocket(rpc_ws_endpoint: &str) -> Result<()> {
     info!("Connected to WebSocket server: sol websocket");
 
     let (mut write, mut read) = ws_stream.split();
+
+    // Start periodic cleanup task for K-line data
+    let kline_manager_clone = Arc::clone(&kline_manager);
+    let _kline_check_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            let manager = kline_manager_clone.lock().await;
+            if let Err(e) = manager.cleanup_idle_klines().await {
+                error!("K-line cleanup failed: {}", e);
+            }
+        }
+    });
 
     let logs_subscribe = json!({
           "jsonrpc": "2.0",
@@ -75,6 +94,21 @@ pub async fn connect_websocket(rpc_ws_endpoint: &str) -> Result<()> {
                     if method == "logsNotification" {
                         if let Some(trade_event) = parse_trade_event(&response) {
                             if let Some(details) = calculate_trade_details(&trade_event) {
+                                // Update K-line data
+                                let manager = kline_manager.lock().await;
+                                if let Err(e) = manager
+                                    .add_trade(
+                                        &trade_event.mint,
+                                        trade_event.timestamp,
+                                        details.price,
+                                        details.sol_amount_formatted,
+                                        details.token_amount_formatted,
+                                    )
+                                    .await
+                                {
+                                    error!("K-line update failed: {}", e);
+                                }
+
                                 info!(
                                     "🟢 {}: signature= {}, mint= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, market_cap= {:.2}, success= {}, time= {}",
                                     if trade_event.is_buy { "Buy" } else { "Sell" },
@@ -152,11 +186,22 @@ fn parse_trade_event(response: &Value) -> Option<TradeEvent> {
         return None;
     }
 
-    // Extract and parse program data
+    // Extract and parse program data that comes AFTER Buy/Sell instruction
+    let mut found_buy_sell = false;
     for log in logs {
         if let Some(log_str) = log.as_str() {
-            if log_str.starts_with("Program data: ") {
+            // Check if this is a Buy/Sell instruction
+            if log_str.contains("Program log: Instruction: Buy")
+                || log_str.contains("Program log: Instruction: Sell")
+            {
+                found_buy_sell = true;
+                continue;
+            }
+
+            // Only parse program data if we've seen a Buy/Sell instruction before
+            if found_buy_sell && log_str.starts_with("Program data: ") {
                 if let Some(data_str) = log_str.strip_prefix("Program data: ") {
+                    // info!("Parsing program data after Buy/Sell: {}", data_str);
                     if let Some(trade_data) = decode_and_parse_program_data(data_str) {
                         return Some(TradeEvent {
                             signature,
@@ -265,7 +310,7 @@ fn decode_and_parse_program_data(
         u64::from_le_bytes(bytes)
     };
 
-    info!(
+    debug!(
         "Decoded TradeEvent: sol_amount={}, token_amount={}, is_buy={}, user={}, timestamp={}",
         sol_amount, token_amount, is_buy, user, timestamp
     );

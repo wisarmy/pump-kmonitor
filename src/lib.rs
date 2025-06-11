@@ -6,6 +6,7 @@ use solana_client::rpc_client::RpcClient;
 use tracing::debug;
 
 pub mod constant;
+pub mod kline;
 pub mod logger;
 pub mod pump;
 
