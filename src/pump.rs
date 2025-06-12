@@ -96,7 +96,13 @@ pub async fn connect_websocket(
                             if let Some(details) = calculate_trade_details(&trade_event) {
                                 // Skip trades with zero or invalid prices to prevent "low": "0" issues
                                 if details.price.is_zero() {
-                                    warn!("Skipping trade with zero price for mint {}", trade_event.mint);
+                                    warn!("Skipping trade with zero price for mint {:#?}", trade_event);
+                                    continue;
+                                }
+                                // Skip micro transactions (less than 0.0001 SOL) to keep K-lines clean
+                                let min_sol_amount = Decimal::new(1, 4); // 0.0001 SOL
+                                if details.sol_amount_formatted < min_sol_amount {
+                                    debug!("Skipping micro transaction: SOL={}, mint={}", details.sol_amount_formatted, trade_event.mint);
                                     continue;
                                 }
 
@@ -116,7 +122,8 @@ pub async fn connect_websocket(
                                 }
 
                                 info!(
-                                    "🟢 {}: signature= {}, mint= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, market_cap= {:.2}, success= {}, time= {}",
+                                    "{} {}: signature= {}, mint= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, market_cap= {:.2}, success= {}, time= {}",
+                                    if trade_event.is_buy { "🟢" } else { "🔴" },
                                     if trade_event.is_buy { "Buy" } else { "Sell" },
                                     trade_event.signature,
                                     trade_event.mint,

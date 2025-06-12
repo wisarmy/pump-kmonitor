@@ -127,6 +127,19 @@
             word-break: break-all;
         }
 
+        .mint-link {
+            color: #00d4aa;
+            text-decoration: none;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 12px;
+            transition: color 0.3s ease;
+        }
+
+        .mint-link:hover {
+            color: #00c497;
+            text-decoration: underline;
+        }
+
         .mint-info {
             display: flex;
             justify-content: space-between;
@@ -333,11 +346,9 @@
     <!-- Modal -->
     <div id="klineModal" class="modal">
         <div class="modal-content">
-            <span class="close">&times;</span>
-            <div class="modal-header">
-                <h2 class="modal-title" id="modalTitle">K-Line Chart</h2>
-                <div class="mint-address" id="modalMint"></div>
-                <div class="chart-controls">
+            <span class="close">&times;</span>        <div class="modal-header">
+            <h2 class="modal-title" id="modalTitle">K-Line Chart</h2>                <div class="mint-address" id="modalMint"></div>
+            <div class="chart-controls">
                     <button class="chart-type-btn active" onclick="switchChartType('candlestick')">Candlestick</button>
                     <button class="chart-type-btn" onclick="switchChartType('line')">Line</button>
                     <button class="chart-type-btn" onclick="switchChartType('area')">Area</button>
@@ -428,7 +439,9 @@
                 return `
                     <div class="mint-card" onclick="showKlineChart('${mint.mint}')">
                         <div class="activity-indicator ${isActive ? '' : 'inactive'}"></div>
-                        <div class="mint-address">${mint.mint}</div>
+                        <div class="mint-address">
+                            <a href="https://gmgn.ai/sol/token/${mint.mint}" target="_blank" class="mint-link" onclick="event.stopPropagation();">${mint.mint}</a>
+                        </div>
                         <div class="mint-info">
                             <span class="kline-count">${mint.kline_count} K-Lines</span>
                             <span class="last-activity">${timeAgo}</span>
@@ -464,7 +477,7 @@
             
             currentMint = mint;
             modalTitle.textContent = 'K-Line Chart';
-            modalMint.textContent = mint;
+            modalMint.innerHTML = `<a href="https://gmgn.ai/sol/token/${mint}" target="_blank" class="mint-link">${mint}</a>`;
             modal.style.display = 'block';
             
             // Clear previous chart and interval

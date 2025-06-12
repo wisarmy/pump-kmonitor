@@ -14,9 +14,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Monitor {
+    /// Start the monitoring service (WebSocket connection to Pump.fun)
+    Monitor,
+    /// Start the web service (HTTP API and web interface)
+    Web {
         #[arg(long, default_value = "8080")]
-        web_port: u16,
+        port: u16,
     },
 }
 
@@ -27,42 +30,46 @@ pub async fn main() -> Result<()> {
     logger::init(true);
 
     match cli.command {
-        Commands::Monitor { web_port } => {
-            println!("Monitoring started...");
-            
-            // Load environment variables
-            let _ = dotenvy::dotenv();
-            
-            // Use environment variable if available, otherwise use CLI argument
-            let final_web_port = std::env::var("WEB_PORT")
-                .ok()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(web_port);
-            
-            println!("Web interface will be available at http://localhost:{}", final_web_port);
-
-            let websocket_endpoint = std::env::var("RPC_WEBSOCKET_ENDPOINT")
-                .expect("RPC_WEBSOCKET_ENDPOINT environment variable is required");
-
-            // Create a global KLineManager using environment configuration
-            let kline_manager = Arc::new(Mutex::new(
-                KLineManager::new()
-                    .await
-                    .expect("Failed to connect to Redis"),
-            ));
-
-            // Start web server in background
-            let web_kline_manager = Arc::clone(&kline_manager);
-            tokio::spawn(async move {
-                if let Err(e) = web::start_web_server(web_kline_manager, final_web_port).await {
-                    eprintln!("Web server error: {}", e);
-                }
-            });
-
-            // Start WebSocket monitoring
-            pump::connect_websocket(&websocket_endpoint, Arc::clone(&kline_manager)).await?;
+        Commands::Monitor => {
+            println!("🔍 Starting monitoring service...");
+            start_monitor_service().await?;
+        }
+        Commands::Web { port } => {
+            println!("🌐 Starting web service...");
+            start_web_service(port).await?;
         }
     }
 
     Ok(())
+}
+
+async fn start_monitor_service() -> Result<()> {
+    let websocket_endpoint = std::env::var("RPC_WEBSOCKET_ENDPOINT")
+        .expect("RPC_WEBSOCKET_ENDPOINT environment variable is required");
+
+    // Create KLineManager for monitoring service
+    let kline_manager = Arc::new(Mutex::new(
+        KLineManager::new()
+            .await
+            .expect("Failed to connect to Redis"),
+    ));
+
+    println!("📡 Connecting to WebSocket: {}", websocket_endpoint);
+    
+    // Start WebSocket monitoring (this will run indefinitely)
+    pump::connect_websocket(&websocket_endpoint, kline_manager).await
+}
+
+async fn start_web_service(port: u16) -> Result<()> {
+    // Create KLineManager for web service
+    let kline_manager = Arc::new(Mutex::new(
+        KLineManager::new()
+            .await
+            .expect("Failed to connect to Redis"),
+    ));
+
+    println!("🌐 Web interface will be available at http://localhost:{}", port);
+    
+    // Start web server (this will run indefinitely)
+    web::start_web_server(kline_manager, port).await
 }
