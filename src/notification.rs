@@ -103,14 +103,14 @@ impl NotificationManager {
     /// 格式化告警消息
     fn format_alert_message(&self, alert: &StrategyAlert) -> String {
         format!(
-            "
-            - 🚨 策略告警
-            - 📍 Token: {}
-            - 🔍 策略: {}
-            - 📊 详情: {}
-            - ⏰ 时间: {}
-            - 📈 K线数量: {}
-            - 🔗 [GMGN](https://gmgn.ai/sol/token/{})",
+"## 🚀连续上涨📈
+- 🚨 策略告警
+- 📍 Token: {}
+- 🔍 策略: {}
+- 📊 详情: {}
+- ⏰ 时间: {}
+- 📈 K线数量: {}
+- 🔗 [GMGN](https://gmgn.ai/sol/token/{})",
             alert.mint,
             alert.strategy_name,
             alert.message,
