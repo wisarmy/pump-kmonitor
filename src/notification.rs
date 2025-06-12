@@ -158,7 +158,7 @@ impl NotificationManager {
         let timestamp = chrono::Local::now().timestamp();
         
         // 设置键值，5分钟后过期
-        let _: () = conn.set_ex(&key, timestamp, 300).await?; // 300秒 = 5分钟
+        let _: () = conn.set_ex(&key, timestamp, 600).await?;
         
         Ok(())
     }

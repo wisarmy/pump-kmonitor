@@ -31,8 +31,8 @@ impl Default for ConsecutiveRisingPattern {
     fn default() -> Self {
         Self {
             consecutive_count: 4,
-            require_increasing_gains: true,
-            min_gain_threshold: Decimal::new(1, 2), // 1%
+            require_increasing_gains: false,
+            min_gain_threshold: Decimal::new(1, 3), // 0.1%
         }
     }
 }
@@ -108,8 +108,7 @@ impl StrategyEngine {
         klines: &[KLineData],
     ) -> Option<StrategyAlert> {
         let pattern = ConsecutiveRisingPattern::default();
-
-        // 检查K线数量是否足够
+        
         if klines.len() < pattern.consecutive_count {
             return None;
         }
