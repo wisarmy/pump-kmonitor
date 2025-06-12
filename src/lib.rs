@@ -8,7 +8,9 @@ use tracing::debug;
 pub mod constant;
 pub mod kline;
 pub mod logger;
+pub mod notification;
 pub mod pump;
+pub mod strategy;
 pub mod web;
 
 pub fn get_random_rpc_url() -> Result<String> {
