@@ -46,7 +46,7 @@ cp .env.example .env
 Start the monitoring service to collect K-line data from Pump.fun WebSocket:
 
 ```bash
-cargo run -- monitor
+pump-kmonitor monitor
 ```
 
 **What it does:**
