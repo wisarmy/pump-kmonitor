@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::constant::PUMP_PROGRAM;
 use crate::kline::KLineManager;
@@ -94,6 +94,12 @@ pub async fn connect_websocket(
                     if method == "logsNotification" {
                         if let Some(trade_event) = parse_trade_event(&response) {
                             if let Some(details) = calculate_trade_details(&trade_event) {
+                                // Skip trades with zero or invalid prices to prevent "low": "0" issues
+                                if details.price.is_zero() {
+                                    warn!("Skipping trade with zero price for mint {}", trade_event.mint);
+                                    continue;
+                                }
+
                                 // Update K-line data
                                 let manager = kline_manager.lock().await;
                                 if let Err(e) = manager

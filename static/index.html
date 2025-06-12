@@ -1,0 +1,1073 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pump.fun K-Line Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@0.2.1"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d1421;
+            color: #fff;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #00d4aa;
+            font-size: 2.5rem;
+        }
+
+        .stats {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+
+        .stat-card {
+            background: #1a1f2e;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            min-width: 150px;
+            border: 1px solid #2a3441;
+        }
+
+        .stat-number {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #00d4aa;
+        }
+
+        .stat-label {
+            color: #8b949e;
+            margin-top: 5px;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .search-box {
+            padding: 10px 15px;
+            border: 1px solid #3d444d;
+            border-radius: 5px;
+            background: #1a1f2e;
+            color: #fff;
+            font-size: 14px;
+            width: 300px;
+        }
+
+        .refresh-btn {
+            background: #00d4aa;
+            color: #0d1421;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+
+        .refresh-btn:hover {
+            background: #00c497;
+        }
+
+        .mint-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .mint-card {
+            background: #1a1f2e;
+            border: 1px solid #2a3441;
+            border-radius: 10px;
+            padding: 20px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .mint-card:hover {
+            border-color: #00d4aa;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0, 212, 170, 0.2);
+        }
+
+        .mint-address {
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 12px;
+            color: #8b949e;
+            margin-bottom: 10px;
+            word-break: break-all;
+        }
+
+        .mint-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .kline-count {
+            background: #00d4aa;
+            color: #0d1421;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .last-activity {
+            color: #8b949e;
+            font-size: 12px;
+        }
+
+        .activity-indicator {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #28a745;
+        }
+
+        .activity-indicator.inactive {
+            background: #dc3545;
+        }
+
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+        }
+
+        .modal-content {
+            background-color: #1a1f2e;
+            margin: 2% auto;
+            padding: 20px;
+            border: 1px solid #2a3441;
+            border-radius: 10px;
+            width: 90%;
+            max-width: 1000px;
+            height: 90%;
+            position: relative;
+        }
+
+        .close {
+            color: #8b949e;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            position: absolute;
+            right: 20px;
+            top: 15px;
+        }
+
+        .close:hover {
+            color: #fff;
+        }
+
+        .modal-header {
+            margin-bottom: 20px;
+            padding-right: 40px;
+        }
+
+        .modal-title {
+            color: #00d4aa;
+            font-size: 1.5rem;
+            margin-bottom: 5px;
+        }
+
+        .chart-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            align-items: center;
+        }
+
+        .chart-type-btn {
+            background: #2a3441;
+            color: #8b949e;
+            border: 1px solid #3d444d;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.3s;
+        }
+
+        .chart-type-btn.active {
+            background: #00d4aa;
+            color: #0d1421;
+            border-color: #00d4aa;
+        }
+
+        .chart-type-btn:hover:not(.active) {
+            background: #3d444d;
+            color: #fff;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 70vh;
+            background: #0d1421;
+            border-radius: 10px;
+            padding: 20px;
+        }
+
+        .loading {
+            text-align: center;
+            color: #8b949e;
+            padding: 50px;
+        }
+
+        .spinner {
+            border: 3px solid #2a3441;
+            border-top: 3px solid #00d4aa;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            color: #dc3545;
+            text-align: center;
+            padding: 50px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+            
+            .mint-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .search-box {
+                width: 100%;
+            }
+            
+            .modal-content {
+                width: 95%;
+                height: 95%;
+                margin: 2.5% auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Pump.fun K-Line Monitor</h1>
+        
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-number" id="totalMints">-</div>
+                <div class="stat-label">Active Mints</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="totalKlines">-</div>
+                <div class="stat-label">Total K-Lines</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <input type="text" class="search-box" id="searchBox" placeholder="Search mint address...">
+            <button class="refresh-btn" onclick="loadMints()">Refresh</button>
+        </div>
+
+        <div class="mint-grid" id="mintGrid">
+            <div class="loading">
+                <div class="spinner"></div>
+                Loading mints...
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal -->
+    <div id="klineModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <div class="modal-header">
+                <h2 class="modal-title" id="modalTitle">K-Line Chart</h2>
+                <div class="mint-address" id="modalMint"></div>
+                <div class="chart-controls">
+                    <button class="chart-type-btn active" onclick="switchChartType('candlestick')">Candlestick</button>
+                    <button class="chart-type-btn" onclick="switchChartType('line')">Line</button>
+                    <button class="chart-type-btn" onclick="switchChartType('area')">Area</button>
+                    <span id="chartStatus" style="color: #8b949e; font-size: 12px; margin-left: 15px;"></span>
+                </div>
+            </div>
+            <div class="chart-container">
+                <canvas id="klineChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allMints = [];
+        let currentChart = null;
+        let currentKlineData = [];
+        let currentChartType = 'candlestick';
+        let currentMint = null;
+        let chartRefreshInterval = null;
+
+        // Switch chart type
+        function switchChartType(type) {
+            currentChartType = type;
+            
+            // Update button states
+            document.querySelectorAll('.chart-type-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            // Recreate chart with new type
+            if (currentKlineData.length > 0) {
+                createKlineChart(document.getElementById('klineChart'), currentKlineData);
+            }
+        }
+
+        // Load stats
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                
+                if (data.success && data.data) {
+                    document.getElementById('totalMints').textContent = data.data.total_mints || 0;
+                    document.getElementById('totalKlines').textContent = data.data.total_klines || 0;
+                }
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+            }
+        }
+
+        // Load mints
+        async function loadMints() {
+            const grid = document.getElementById('mintGrid');
+            grid.innerHTML = '<div class="loading"><div class="spinner"></div>Loading mints...</div>';
+
+            try {
+                const response = await fetch('/api/mints');
+                const data = await response.json();
+                
+                if (data.success && data.data) {
+                    allMints = data.data;
+                    displayMints(allMints);
+                } else {
+                    grid.innerHTML = '<div class="error">Failed to load mints: ' + (data.message || 'Unknown error') + '</div>';
+                }
+            } catch (error) {
+                grid.innerHTML = '<div class="error">Failed to load mints: ' + error.message + '</div>';
+            }
+        }
+
+        // Display mints
+        function displayMints(mints) {
+            const grid = document.getElementById('mintGrid');
+            
+            if (mints.length === 0) {
+                grid.innerHTML = '<div class="loading">No active mints found</div>';
+                return;
+            }
+
+            const currentTime = Math.floor(Date.now() / 1000);
+            
+            grid.innerHTML = mints.map(mint => {
+                const timeDiff = currentTime - mint.last_activity;
+                const isActive = timeDiff < 300; // Active if updated within 5 minutes
+                const timeAgo = formatTimeAgo(timeDiff);
+                
+                return `
+                    <div class="mint-card" onclick="showKlineChart('${mint.mint}')">
+                        <div class="activity-indicator ${isActive ? '' : 'inactive'}"></div>
+                        <div class="mint-address">${mint.mint}</div>
+                        <div class="mint-info">
+                            <span class="kline-count">${mint.kline_count} K-Lines</span>
+                            <span class="last-activity">${timeAgo}</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Format time ago
+        function formatTimeAgo(seconds) {
+            if (seconds < 60) return `${seconds}s ago`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+            return `${Math.floor(seconds / 86400)}d ago`;
+        }
+
+        // Search functionality
+        document.getElementById('searchBox').addEventListener('input', function(e) {
+            const searchTerm = e.target.value.toLowerCase();
+            const filteredMints = allMints.filter(mint => 
+                mint.mint.toLowerCase().includes(searchTerm)
+            );
+            displayMints(filteredMints);
+        });
+
+        // Show K-line chart
+        async function showKlineChart(mint) {
+            const modal = document.getElementById('klineModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const modalMint = document.getElementById('modalMint');
+            const chartCanvas = document.getElementById('klineChart');
+            
+            currentMint = mint;
+            modalTitle.textContent = 'K-Line Chart';
+            modalMint.textContent = mint;
+            modal.style.display = 'block';
+            
+            // Clear previous chart and interval
+            if (currentChart) {
+                currentChart.destroy();
+                currentChart = null;
+            }
+            
+            if (chartRefreshInterval) {
+                clearInterval(chartRefreshInterval);
+                chartRefreshInterval = null;
+            }
+            
+            // Load initial data
+            await loadChartData(mint);
+            
+            // Start auto refresh every 2 seconds
+            chartRefreshInterval = setInterval(() => {
+                if (currentMint && modal.style.display === 'block') {
+                    loadChartData(currentMint);
+                }
+            }, 2000);
+        }
+        
+        // Load chart data
+        async function loadChartData(mint) {
+            const chartCanvas = document.getElementById('klineChart');
+            
+            try {
+                const response = await fetch(`/api/mint/${mint}/klines?limit=100`);
+                const data = await response.json();
+                
+                if (data.success && data.data) {
+                    currentKlineData = data.data;
+                    createKlineChart(chartCanvas, currentKlineData);
+                } else {
+                    chartCanvas.style.display = 'none';
+                    chartCanvas.parentNode.innerHTML = '<div class="error">Failed to load K-line data: ' + (data.message || 'Unknown error') + '</div>';
+                }
+            } catch (error) {
+                chartCanvas.style.display = 'none';
+                chartCanvas.parentNode.innerHTML = '<div class="error">Failed to load K-line data: ' + error.message + '</div>';
+            }
+        }
+
+        // Create K-line chart
+        function createKlineChart(canvas, klineData) {
+            const ctx = canvas.getContext('2d');
+            
+            // Destroy existing chart
+            if (currentChart) {
+                currentChart.destroy();
+                currentChart = null;
+            }
+            
+            // Sort by timestamp
+            klineData.sort((a, b) => a.timestamp - b.timestamp);
+            
+            if (klineData.length === 0) {
+                canvas.style.display = 'none';
+                canvas.parentNode.innerHTML = '<div class="error">No K-line data available</div>';
+                return;
+            }
+            
+            // Ensure canvas is visible
+            canvas.style.display = 'block';
+            canvas.parentNode.style.display = 'block';
+            
+            let datasets = [];
+            let chartType = currentChartType;
+            
+            // Clear status information
+            const statusEl = document.getElementById('chartStatus');
+            if (statusEl) {
+                statusEl.textContent = `Displaying ${klineData.length} K-lines`;
+            }
+            
+            if (chartType === 'candlestick') {
+                // Try candlestick chart first
+                try {
+                    const candlestickData = klineData.map(k => ({
+                        x: k.timestamp * 1000,
+                        o: parseFloat(k.open),
+                        h: parseFloat(k.high),
+                        l: parseFloat(k.low),
+                        c: parseFloat(k.close)
+                    }));
+                    
+                    currentChart = new Chart(ctx, {
+                        type: 'candlestick',
+                        data: {
+                            datasets: [{
+                                label: 'OHLC',
+                                data: candlestickData,
+                                borderColor: {
+                                    up: '#00d4aa',
+                                    down: '#ff6b6b',
+                                    unchanged: '#8b949e'
+                                },
+                                backgroundColor: {
+                                    up: 'rgba(0, 212, 170, 0.8)',
+                                    down: 'rgba(255, 107, 107, 0.8)',
+                                    unchanged: 'rgba(139, 148, 158, 0.8)'
+                                },
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: {
+                                intersect: false,
+                                mode: 'index'
+                            },
+                            plugins: {
+                                legend: {
+                                    labels: {
+                                        color: '#fff'
+                                    }
+                                },
+                                tooltip: {
+                                    backgroundColor: 'rgba(26, 31, 46, 0.9)',
+                                    titleColor: '#fff',
+                                    bodyColor: '#fff',
+                                    borderColor: '#2a3441',
+                                    borderWidth: 1,
+                                    callbacks: {
+                                        title: function(context) {
+                                            return new Date(context[0].parsed.x).toLocaleString();
+                                        },
+                                        label: function(context) {
+                                            const data = context.parsed;
+                                            return [
+                                                `Open: ${data.o?.toFixed(9) || 'N/A'} SOL`,
+                                                `High: ${data.h?.toFixed(9) || 'N/A'} SOL`,
+                                                `Low: ${data.l?.toFixed(9) || 'N/A'} SOL`,
+                                                `Close: ${data.c?.toFixed(9) || 'N/A'} SOL`
+                                            ];
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    type: 'time',
+                                    time: {
+                                        unit: klineData.length === 1 ? 'second' : 'minute',
+                                        displayFormats: {
+                                            second: 'HH:mm:ss',
+                                            minute: 'HH:mm',
+                                            hour: 'HH:mm',
+                                            day: 'MM-dd'
+                                        },
+                                        min: klineData.length === 1 ? 
+                                            new Date(klineData[0].timestamp * 1000 - 60000) : undefined,
+                                        max: klineData.length === 1 ? 
+                                            new Date(klineData[0].timestamp * 1000 + 60000) : undefined
+                                    },
+                                    ticks: {
+                                        color: '#8b949e',
+                                        maxTicksLimit: klineData.length === 1 ? 3 : 10,
+                                        autoSkip: false
+                                    },
+                                    grid: {
+                                        color: '#2a3441'
+                                    },
+                                    offset: true
+                                },
+                                y: {
+                                    position: 'right',
+                                    ticks: {
+                                        color: '#8b949e',
+                                        callback: function(value) {
+                                            return value.toFixed(9) + ' SOL';
+                                        }
+                                    },
+                                    grid: {
+                                        color: '#2a3441'
+                                    },
+                                    grace: klineData.length === 1 ? '10%' : '5%'
+                                }
+                            },
+                            layout: {
+                                padding: {
+                                    left: 10,
+                                    right: 10,
+                                    top: 10,
+                                    bottom: 10
+                                }
+                            }
+                        }
+                    });
+                    
+                    console.log('Candlestick chart created successfully with', klineData.length, 'data points');
+                } catch (error) {
+                    console.error('Candlestick chart failed, creating custom OHLC chart:', error);
+                    
+                    // Create custom OHLC chart using bar chart
+                    const ohlcData = klineData.map((k, index) => {
+                        const open = parseFloat(k.open);
+                        const high = parseFloat(k.high);
+                        const low = parseFloat(k.low);
+                        const close = parseFloat(k.close);
+                        const isUp = close >= open;
+                        
+                        return {
+                            x: k.timestamp * 1000,
+                            high: high,
+                            low: low,
+                            open: open,
+                            close: close,
+                            color: isUp ? '#00d4aa' : '#ff6b6b'
+                        };
+                    });
+                    
+                    // Create high-low line dataset
+                    const highLowData = klineData.map(k => [
+                        { x: k.timestamp * 1000, y: parseFloat(k.low) },
+                        { x: k.timestamp * 1000, y: parseFloat(k.high) },
+                        { x: k.timestamp * 1000, y: null } // null to break the line
+                    ]).flat();
+                    
+                    // Create open-close bar dataset
+                    const barData = klineData.map(k => {
+                        const open = parseFloat(k.open);
+                        const close = parseFloat(k.close);
+                        return {
+                            x: k.timestamp * 1000,
+                            y: [Math.min(open, close), Math.max(open, close)],
+                            backgroundColor: close >= open ? '#00d4aa' : '#ff6b6b',
+                            borderColor: close >= open ? '#00d4aa' : '#ff6b6b'
+                        };
+                    });
+                    
+                    currentChart = new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            datasets: [{
+                                label: 'OHLC Bars',
+                                type: 'bar',
+                                data: barData,
+                                backgroundColor: function(context) {
+                                    const k = klineData[context.dataIndex];
+                                    return parseFloat(k.close) >= parseFloat(k.open) ? 
+                                        'rgba(0, 212, 170, 0.8)' : 'rgba(255, 107, 107, 0.8)';
+                                },
+                                borderColor: function(context) {
+                                    const k = klineData[context.dataIndex];
+                                    return parseFloat(k.close) >= parseFloat(k.open) ? 
+                                        '#00d4aa' : '#ff6b6b';
+                                },
+                                borderWidth: 1,
+                                barThickness: klineData.length === 1 ? 20 : 'flex',
+                                maxBarThickness: 30
+                            }, {
+                                label: 'High-Low Lines',
+                                type: 'line',
+                                data: highLowData,
+                                borderColor: '#8b949e',
+                                borderWidth: 1,
+                                pointRadius: 0,
+                                fill: false,
+                                showLine: true
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: {
+                                intersect: false,
+                                mode: 'index'
+                            },
+                            plugins: {
+                                legend: {
+                                    labels: {
+                                        color: '#fff'
+                                    }
+                                },
+                                tooltip: {
+                                    backgroundColor: 'rgba(26, 31, 46, 0.9)',
+                                    titleColor: '#fff',
+                                    bodyColor: '#fff',
+                                    borderColor: '#2a3441',
+                                    borderWidth: 1,
+                                    callbacks: {
+                                        title: function(context) {
+                                            return new Date(context[0].parsed.x).toLocaleString();
+                                        },
+                                        label: function(context) {
+                                            if (context.datasetIndex === 0) {
+                                                const k = klineData[context.dataIndex];
+                                                return [
+                                                    `Open: ${parseFloat(k.open).toFixed(9)} SOL`,
+                                                    `High: ${parseFloat(k.high).toFixed(9)} SOL`,
+                                                    `Low: ${parseFloat(k.low).toFixed(9)} SOL`,
+                                                    `Close: ${parseFloat(k.close).toFixed(9)} SOL`
+                                                ];
+                                            }
+                                            return '';
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    type: 'time',
+                                    time: {
+                                        unit: klineData.length === 1 ? 'second' : 'minute',
+                                        displayFormats: {
+                                            second: 'HH:mm:ss',
+                                            minute: 'HH:mm',
+                                            hour: 'HH:mm',
+                                            day: 'MM-dd'
+                                        },
+                                        min: klineData.length === 1 ? 
+                                            new Date(klineData[0].timestamp * 1000 - 60000) : undefined,
+                                        max: klineData.length === 1 ? 
+                                            new Date(klineData[0].timestamp * 1000 + 60000) : undefined
+                                    },
+                                    ticks: {
+                                        color: '#8b949e',
+                                        maxTicksLimit: klineData.length === 1 ? 3 : 10
+                                    },
+                                    grid: {
+                                        color: '#2a3441'
+                                    },
+                                    offset: true
+                                },
+                                y: {
+                                    position: 'right',
+                                    ticks: {
+                                        color: '#8b949e',
+                                        callback: function(value) {
+                                            return value.toFixed(9) + ' SOL';
+                                        }
+                                    },
+                                    grid: {
+                                        color: '#2a3441'
+                                    },
+                                    grace: klineData.length === 1 ? '10%' : '5%'
+                                }
+                            },
+                            layout: {
+                                padding: {
+                                    left: 10,
+                                    right: 10,
+                                    top: 10,
+                                    bottom: 10
+                                }
+                            }
+                        }
+                    });
+                    
+                    if (statusEl) {
+                        statusEl.textContent = `Custom OHLC chart (${klineData.length} K-lines)`;
+                    }
+                }
+            }
+            
+            if (chartType === 'line') {
+                // Line chart
+                const lineData = klineData.map(k => ({
+                    x: k.timestamp * 1000,
+                    y: parseFloat(k.close)
+                }));
+                
+                datasets = [{
+                    label: 'Price (SOL)',
+                    data: lineData,
+                    borderColor: '#00d4aa',
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.1,
+                    pointRadius: klineData.length <= 3 ? 6 : 3, // Show larger points when data is sparse
+                    pointHoverRadius: 8
+                }];
+                
+                currentChart = new Chart(ctx, {
+                    type: 'line',
+                    data: { datasets },
+                    options: getLineOptions()
+                });
+                
+            } else if (chartType === 'area') {
+                // Area chart
+                const areaData = klineData.map(k => ({
+                    x: k.timestamp * 1000,
+                    y: parseFloat(k.close)
+                }));
+                
+                datasets = [{
+                    label: 'Price (SOL)',
+                    data: areaData,
+                    borderColor: '#00d4aa',
+                    backgroundColor: 'rgba(0, 212, 170, 0.2)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.1,
+                    pointRadius: klineData.length <= 3 ? 6 : 3,
+                    pointHoverRadius: 8
+                }];
+                
+                currentChart = new Chart(ctx, {
+                    type: 'line',
+                    data: { datasets },
+                    options: getLineOptions()
+                });
+            }
+        }
+        
+        // Get candlestick chart options
+        function getCandlestickOptions() {
+            return {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    intersect: false,
+                    mode: 'index'
+                },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: '#fff'
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(26, 31, 46, 0.9)',
+                        titleColor: '#fff',
+                        bodyColor: '#fff',
+                        borderColor: '#2a3441',
+                        borderWidth: 1,
+                        callbacks: {
+                            title: function(context) {
+                                return new Date(context[0].parsed.x).toLocaleString();
+                            },
+                            label: function(context) {
+                                const data = context.parsed;
+                                return [
+                                    `Open: ${data.o?.toFixed(9) || 'N/A'} SOL`,
+                                    `High: ${data.h?.toFixed(9) || 'N/A'} SOL`,
+                                    `Low: ${data.l?.toFixed(9) || 'N/A'} SOL`,
+                                    `Close: ${data.c?.toFixed(9) || 'N/A'} SOL`
+                                ];
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            unit: 'minute',
+                            displayFormats: {
+                                minute: 'HH:mm',
+                                hour: 'HH:mm',
+                                day: 'MM-dd'
+                            }
+                        },
+                        ticks: {
+                            color: '#8b949e',
+                            maxTicksLimit: 10,
+                            // Ensure display even with single data point
+                            autoSkip: false
+                        },
+                        grid: {
+                            color: '#2a3441'
+                        },
+                        // Add appropriate margins for single data point
+                        offset: true
+                    },
+                    y: {
+                        position: 'right',
+                        ticks: {
+                            color: '#8b949e',
+                            callback: function(value) {
+                                return value.toFixed(9) + ' SOL';
+                            }
+                        },
+                        grid: {
+                            color: '#2a3441'
+                        },
+                        // Ensure Y-axis has appropriate range even with single data point
+                        grace: '5%'
+                    }
+                },
+                // Optimize layout for single data point
+                layout: {
+                    padding: {
+                        left: 10,
+                        right: 10,
+                        top: 10,
+                        bottom: 10
+                    }
+                }
+            };
+        }
+        
+        // Get line/area chart options
+        function getLineOptions() {
+            return {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    intersect: false,
+                    mode: 'index'
+                },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: '#fff'
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(26, 31, 46, 0.9)',
+                        titleColor: '#fff',
+                        bodyColor: '#fff',
+                        borderColor: '#2a3441',
+                        borderWidth: 1,
+                        callbacks: {
+                            title: function(context) {
+                                return new Date(context[0].parsed.x).toLocaleString();
+                            },
+                            label: function(context) {
+                                return `Price: ${context.parsed.y.toFixed(9)} SOL`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            unit: 'minute',
+                            displayFormats: {
+                                minute: 'HH:mm',
+                                hour: 'HH:mm',
+                                day: 'MM-dd'
+                            }
+                        },
+                        ticks: {
+                            color: '#8b949e',
+                            maxTicksLimit: 10
+                        },
+                        grid: {
+                            color: '#2a3441'
+                        }
+                    },
+                    y: {
+                        position: 'right',
+                        ticks: {
+                            color: '#8b949e',
+                            callback: function(value) {
+                                return value.toFixed(9) + ' SOL';
+                            }
+                        },
+                        grid: {
+                            color: '#2a3441'
+                        }
+                    }
+                }
+            };
+        }
+
+        // Modal close functionality
+        document.querySelector('.close').onclick = function() {
+            document.getElementById('klineModal').style.display = 'none';
+            if (currentChart) {
+                currentChart.destroy();
+                currentChart = null;
+            }
+            if (chartRefreshInterval) {
+                clearInterval(chartRefreshInterval);
+                chartRefreshInterval = null;
+            }
+            currentMint = null;
+        }
+
+        window.onclick = function(event) {
+            const modal = document.getElementById('klineModal');
+            if (event.target === modal) {
+                modal.style.display = 'none';
+                if (currentChart) {
+                    currentChart.destroy();
+                    currentChart = null;
+                }
+                if (chartRefreshInterval) {
+                    clearInterval(chartRefreshInterval);
+                    chartRefreshInterval = null;
+                }
+                currentMint = null;
+            }
+        }
+
+        // Initialize
+        loadStats();
+        loadMints();
+        
+        // Auto refresh every 30 seconds
+        setInterval(() => {
+            loadStats();
+            loadMints();
+        }, 30000);
+    </script>
+</body>
+</html>

@@ -23,3 +23,8 @@ tokio-tungstenite = { version = "0.26.2", features = ["native-tls"] }
 tracing = "0.1.41"
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+# Web server dependencies
+axum = "0.7.9"
+tower = "0.4.13"
+tower-http = { version = "0.5.2", features = ["fs", "cors"] }
+hyper = "1.5.1"

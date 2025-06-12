@@ -3,7 +3,7 @@ use redis::{AsyncCommands, Client};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KLineData {
@@ -126,12 +126,36 @@ impl KLineManager {
             }
 
             // Update closing price
-            kline.close = price_str;
+            kline.close = price_str.clone();
             kline.last_update = current_time;
 
             // Accumulate trading volume
             kline.volume_sol = (vol_sol_decimal + sol_volume).to_string();
             kline.volume_token = (vol_token_decimal + token_volume).to_string();
+            
+            // Check if low price is zero and fix it
+            if kline.low == "0" {
+                warn!(
+                    "⚠️ Low price for mint {} is zero, setting to current price: {}, timestamp: {}",
+                    mint, price, timestamp
+                );
+            }
+
+            // Check if high price has increased more than 1000% compared to open price
+            let open_decimal: Decimal = kline.open.parse().unwrap_or(Decimal::ZERO);
+            if open_decimal > Decimal::ZERO {
+                let high_decimal_current: Decimal = kline.high.parse().unwrap_or(Decimal::ZERO);
+                let price_increase = (high_decimal_current - open_decimal) / open_decimal;
+                let thousand_percent = Decimal::new(100, 0); // 10000% = 100.0
+                
+                if price_increase > thousand_percent {
+                    let increase_percentage = price_increase * Decimal::new(100, 0);
+                    warn!(
+                        "⚠️ Mint {} surged {:.2}% - Open: {}, High: {}, Current: {}, timestamp: {}",
+                        mint, increase_percentage, kline.open, kline.high, price, timestamp
+                    );
+                }
+            }
 
             kline
         } else {

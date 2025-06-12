@@ -9,6 +9,7 @@ pub mod constant;
 pub mod kline;
 pub mod logger;
 pub mod pump;
+pub mod web;
 
 pub fn get_random_rpc_url() -> Result<String> {
     let cluster_urls = env::var("RPC_ENDPOINTS")?
