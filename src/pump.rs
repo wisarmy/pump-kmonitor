@@ -99,8 +99,8 @@ pub async fn connect_websocket(
                                     warn!("Skipping trade with zero price for mint {:#?}", trade_event);
                                     continue;
                                 }
-                                // Skip micro transactions (less than 0.0001 SOL) to keep K-lines clean
-                                let min_sol_amount = Decimal::new(1, 4); // 0.0001 SOL
+                                // Skip micro transactions (less than 0.01 SOL) to keep K-lines clean
+                                let min_sol_amount = Decimal::new(1, 2); // 0.01 SOL
                                 if details.sol_amount_formatted < min_sol_amount {
                                     debug!("Skipping micro transaction: SOL={}, mint={}", details.sol_amount_formatted, trade_event.mint);
                                     continue;

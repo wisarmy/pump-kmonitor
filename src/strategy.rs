@@ -90,7 +90,7 @@ impl StrategyEngine {
                 if let Err(e) = self.notification_manager.send_notification(&alert).await {
                     warn!("❌ 通知发送失败: {}", e);
                 } else {
-                    info!("✅ 通知发送成功");
+                    // info!("✅ 通知发送成功");
                 }
             }
 
