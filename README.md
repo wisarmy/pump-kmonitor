@@ -50,7 +50,7 @@ pump-kmonitor monitor
 ```
 
 **What it does:**
-- Connects to Pump.fun WebSocket endpoint (`wss://pumpportal.fun/api/data`)
+- Connects to Pump.fun WebSocket endpoint (`https://api.mainnet-beta.solana.com`)s
 - Processes real-time trading data and converts to K-line format
 - Stores K-line data in Redis with automatic expiration
 - Cleans up inactive token data to maintain performance
