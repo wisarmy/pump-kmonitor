@@ -98,7 +98,8 @@ async fn start_strategy_service(once: bool, interval: u64) -> Result<()> {
     ));
 
     // Create notification manager
-    let notification_manager = NotificationManager::new();
+    let notification_manager = NotificationManager::new()
+        .expect("Failed to create notification manager");
 
     // Check if notification script is available
     if notification_manager.is_enabled() && !notification_manager.check_script_availability() {

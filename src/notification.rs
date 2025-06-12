@@ -1,5 +1,6 @@
 use crate::strategy::StrategyAlert;
 use anyhow::Result;
+use redis::{AsyncCommands, Client as RedisClient};
 use serde_json;
 use std::path::PathBuf;
 use std::process::Command;
@@ -11,11 +12,13 @@ pub struct NotificationManager {
     script_path: PathBuf,
     /// 是否启用通知
     enabled: bool,
+    /// Redis客户端，用于存储通知记录
+    redis_client: RedisClient,
 }
 
 impl NotificationManager {
     /// 创建新的通知管理器
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self> {
         let script_path = std::env::var("NOTIFICATION_SCRIPT_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -28,10 +31,15 @@ impl NotificationManager {
             .parse()
             .unwrap_or(true);
 
-        Self {
+        // 连接Redis
+        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+        let redis_client = RedisClient::open(redis_url)?;
+
+        Ok(Self {
             script_path,
             enabled,
-        }
+            redis_client,
+        })
     }
 
     /// 发送通知
@@ -43,6 +51,12 @@ impl NotificationManager {
 
         if !self.script_path.exists() {
             warn!("⚠️ 通知脚本不存在: {:?}", self.script_path);
+            return Ok(());
+        }
+
+        // 检查是否在5分钟内已经通知过该代币
+        if self.should_skip_duplicate_notification(&alert.mint).await? {
+            info!("🔄 代币 {} 在5分钟内已通知过，跳过重复通知", &alert.mint);
             return Ok(());
         }
 
@@ -66,6 +80,11 @@ impl NotificationManager {
                     if !result.stdout.is_empty() {
                         info!("📤 脚本输出: {}", String::from_utf8_lossy(&result.stdout));
                     }
+                    
+                    // 通知成功后，记录到Redis中，避免重复通知
+                    if let Err(e) = self.record_notification(&alert.mint).await {
+                        warn!("⚠️ 记录通知状态失败: {}", e);
+                    }
                 } else {
                     let stderr = String::from_utf8_lossy(&result.stderr);
                     error!("❌ 通知脚本执行失败: {}", stderr);
@@ -84,13 +103,14 @@ impl NotificationManager {
     /// 格式化告警消息
     fn format_alert_message(&self, alert: &StrategyAlert) -> String {
         format!(
-            "🚨 策略告警\n\
-            📍 Token: {}\n\
-            🔍 策略: {}\n\
-            📊 详情: {}\n\
-            ⏰ 时间: {}\n\
-            📈 K线数量: {}\n\
-            🔗 [GMGN](https://gmgn.ai/sol/token/{})",
+            "
+            - 🚨 策略告警
+            - 📍 Token: {}
+            - 🔍 策略: {}
+            - 📊 详情: {}
+            - ⏰ 时间: {}
+            - 📈 K线数量: {}
+            - 🔗 [GMGN](https://gmgn.ai/sol/token/{})",
             alert.mint,
             alert.strategy_name,
             alert.message,
@@ -119,5 +139,27 @@ impl NotificationManager {
     /// 是否启用通知
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// 检查是否应该跳过重复通知（5分钟内已通知过）
+    async fn should_skip_duplicate_notification(&self, mint: &str) -> Result<bool> {
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let key = format!("notification:{}:recent", mint);
+        
+        // 检查键是否存在
+        let exists: bool = conn.exists(&key).await?;
+        Ok(exists)
+    }
+
+    /// 记录通知状态（设置5分钟过期时间）
+    async fn record_notification(&self, mint: &str) -> Result<()> {
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
+        let key = format!("notification:{}:recent", mint);
+        let timestamp = chrono::Local::now().timestamp();
+        
+        // 设置键值，5分钟后过期
+        let _: () = conn.set_ex(&key, timestamp, 300).await?; // 300秒 = 5分钟
+        
+        Ok(())
     }
 }
