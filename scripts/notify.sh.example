@@ -1,0 +1,5 @@
+#!/bin/bash
+
+# 策略告警通知脚本
+# 用法: ./notify.sh <json_data>
+

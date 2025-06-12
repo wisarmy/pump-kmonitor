@@ -26,4 +26,4 @@ target/
 .env
 /target
 /logs
-/scripts
+/scripts/notify.sh
