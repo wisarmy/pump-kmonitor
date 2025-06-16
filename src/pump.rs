@@ -154,6 +154,9 @@ pub fn parse_trade_event(response: &Value) -> Option<TradeEvent> {
     let mut found_buy_sell = false;
     for log in logs {
         if let Some(log_str) = log.as_str() {
+            if log_str.contains("failed") {
+                return None; // Ignore failed transactions
+            }
             // Check if this is a Buy/Sell instruction
             if log_str.contains("Program log: Instruction: Buy")
                 || log_str.contains("Program log: Instruction: Sell")

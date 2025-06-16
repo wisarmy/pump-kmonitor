@@ -192,6 +192,9 @@ pub fn parse_amm_trade_event(response: &Value) -> Option<AmmTradeEvent> {
     let mut is_buy_transaction = None;
     for log in logs {
         if let Some(log_str) = log.as_str() {
+            if log_str.contains("failed") {
+                return None; // Ignore failed transactions
+            }
             if log_str.contains("Program log: Instruction: Buy") {
                 is_buy_transaction = Some(true);
                 break;
