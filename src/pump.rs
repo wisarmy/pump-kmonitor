@@ -1,15 +1,14 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose};
-use futures_util::{SinkExt, StreamExt};
 use rust_decimal::Decimal;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
 use crate::constant::PUMP_PROGRAM;
 use crate::kline::KLineManager;
+use crate::websocket::WebSocketMonitor;
 
 #[derive(Debug)]
 pub struct TradeEvent {
@@ -44,135 +43,87 @@ pub async fn connect_websocket(
     rpc_ws_endpoint: &str,
     kline_manager: Arc<Mutex<KLineManager>>,
 ) -> Result<()> {
-    let (ws_stream, _) = connect_async(rpc_ws_endpoint)
-        .await
-        .context("Failed to connect to WebSocket server")?;
+    let monitor = WebSocketMonitor::new(
+        rpc_ws_endpoint.to_string(),
+        kline_manager,
+        vec![PUMP_PROGRAM.to_string()],
+        "PUMP".to_string(),
+    );
 
-    info!("Connected to WebSocket server: sol websocket");
+    monitor.start(handle_pump_message).await
+}
 
-    let (mut write, mut read) = ws_stream.split();
-
-    // Start periodic cleanup task for K-line data
-    let kline_manager_clone = Arc::clone(&kline_manager);
-    let _kline_check_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            let manager = kline_manager_clone.lock().await;
-            if let Err(e) = manager.cleanup_idle_klines().await {
-                error!("K-line cleanup failed: {}", e);
+pub fn handle_pump_message(
+    response: &Value,
+    kline_manager: Arc<Mutex<KLineManager>>,
+) -> Result<()> {
+    if let Some(trade_event) = parse_trade_event(response) {
+        if let Some(details) = calculate_trade_details(&trade_event) {
+            // Skip trades with zero or invalid prices to prevent "low": "0" issues
+            if details.price.is_zero() {
+                warn!("Skipping trade with zero price for mint {:#?}", trade_event);
+                return Ok(());
             }
-        }
-    });
-
-    let logs_subscribe = json!({
-          "jsonrpc": "2.0",
-          "id": 1,
-          "method": "logsSubscribe",
-          "params": [
-            {
-              "mentions": [ PUMP_PROGRAM ]
-            },
-            {
-              "commitment": "confirmed"
+            // Skip micro transactions (less than 0.01 SOL) to keep K-lines clean
+            let min_sol_amount = Decimal::new(1, 2); // 0.01 SOL
+            if details.sol_amount_formatted < min_sol_amount {
+                debug!(
+                    "Skipping micro transaction: SOL={}, mint={}",
+                    details.sol_amount_formatted, trade_event.mint
+                );
+                return Ok(());
             }
-          ]
-    });
 
-    tokio::spawn(async move {
-        let msg = Message::text(logs_subscribe.to_string());
-        write.send(msg).await.expect("Failed to send message");
-    });
+            // Update K-line data
+            let mint_clone = trade_event.mint.clone();
+            let timestamp = trade_event.timestamp;
+            let price = details.price;
+            let sol_amount = details.sol_amount_formatted;
+            let token_amount = details.token_amount_formatted;
 
-    while let Some(message) = read.next().await {
-        match message {
-            Ok(Message::Text(text)) => {
-                let response: serde_json::Value = serde_json::from_str(&text).unwrap();
-
-                // check if response contains "method" field
-                if let Some(method) = response.get("method") {
-                    if method == "logsNotification" {
-                        if let Some(trade_event) = parse_trade_event(&response) {
-                            if let Some(details) = calculate_trade_details(&trade_event) {
-                                // Skip trades with zero or invalid prices to prevent "low": "0" issues
-                                if details.price.is_zero() {
-                                    warn!("Skipping trade with zero price for mint {:#?}", trade_event);
-                                    continue;
-                                }
-                                // Skip micro transactions (less than 0.01 SOL) to keep K-lines clean
-                                let min_sol_amount = Decimal::new(1, 2); // 0.01 SOL
-                                if details.sol_amount_formatted < min_sol_amount {
-                                    debug!("Skipping micro transaction: SOL={}, mint={}", details.sol_amount_formatted, trade_event.mint);
-                                    continue;
-                                }
-
-                                // Update K-line data
-                                let manager = kline_manager.lock().await;
-                                if let Err(e) = manager
-                                    .add_trade(
-                                        &trade_event.mint,
-                                        trade_event.timestamp,
-                                        details.price,
-                                        details.sol_amount_formatted,
-                                        details.token_amount_formatted,
-                                    )
-                                    .await
-                                {
-                                    error!("K-line update failed: {}", e);
-                                }
-
-                                info!(
-                                    "{} {}: signature= {}, mint= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, market_cap= {:.2}, success= {}, time= {}",
-                                    if trade_event.is_buy { "🟢" } else { "🔴" },
-                                    if trade_event.is_buy { "Buy" } else { "Sell" },
-                                    trade_event.signature,
-                                    trade_event.mint,
-                                    trade_event.user,
-                                    details.sol_amount_formatted,
-                                    details.token_amount_formatted,
-                                    details.price,
-                                    details.market_cap,
-                                    trade_event.success,
-                                    // Convert timestamp to readable format
-                                    chrono::DateTime::from_timestamp(trade_event.timestamp, 0)
-                                        .map(|dt| dt
-                                            .with_timezone(&chrono::Local)
-                                            .format("%Y-%m-%d %H:%M:%S")
-                                            .to_string())
-                                        .unwrap_or_else(|| "Invalid timestamp".to_string())
-                                );
-                            } else {
-                                info!("🟡 Trade detected: {:#?}", trade_event);
-                            }
-                        } else {
-                            // Check if contains Pump instruction but parsing failed
-                            if contains_pump_instruction(&response) {
-                                debug!("Contains Pump instruction but parsing failed");
-                            }
-                        }
-                    }
-                } else {
-                    info!("Received subscription response: {:#?}", response);
+            tokio::spawn(async move {
+                let manager = kline_manager.lock().await;
+                if let Err(e) = manager
+                    .add_trade(&mint_clone, timestamp, price, sol_amount, token_amount)
+                    .await
+                {
+                    error!("K-line update failed: {}", e);
                 }
-            }
-            Ok(Message::Close(close)) => {
-                info!("Connection closed: {:?}", close);
-                break;
-            }
-            Err(e) => {
-                error!("Error receiving message: {:?}", e);
-                break;
-            }
-            _ => {
-                info!("Unknown message");
-            }
+            });
+
+            info!(
+                "{} {} [PUMP]: signature= {}, mint= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, market_cap= {:.2}, success= {}, time= {}",
+                if trade_event.is_buy { "🟢" } else { "🔴" },
+                if trade_event.is_buy { "Buy" } else { "Sell" },
+                trade_event.signature,
+                trade_event.mint,
+                trade_event.user,
+                details.sol_amount_formatted,
+                details.token_amount_formatted,
+                details.price,
+                details.market_cap,
+                trade_event.success,
+                // Convert timestamp to readable format
+                chrono::DateTime::from_timestamp(trade_event.timestamp, 0)
+                    .map(|dt| dt
+                        .with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string())
+                    .unwrap_or_else(|| "Invalid timestamp".to_string())
+            );
+        } else {
+            info!("🟡 Trade detected: {:#?}", trade_event);
+        }
+    } else {
+        // Check if contains Pump instruction but parsing failed
+        if contains_pump_instruction(response) {
+            debug!("Contains Pump instruction but parsing failed");
         }
     }
-
     Ok(())
 }
 
-fn parse_trade_event(response: &Value) -> Option<TradeEvent> {
+pub fn parse_trade_event(response: &Value) -> Option<TradeEvent> {
     // Extract params.result
     let result = response.get("params")?.get("result")?;
 
@@ -342,7 +293,7 @@ fn decode_and_parse_program_data(
     ))
 }
 
-fn calculate_trade_details(trade_event: &TradeEvent) -> Option<TradeDetails> {
+pub fn calculate_trade_details(trade_event: &TradeEvent) -> Option<TradeDetails> {
     // Use Decimal for precise calculations
     let sol_divisor = Decimal::new(1_000_000_000, 0); // 10^9 for SOL
     let token_divisor = Decimal::new(1_000_000, 0); // 10^6 for tokens
@@ -377,7 +328,7 @@ fn calculate_trade_details(trade_event: &TradeEvent) -> Option<TradeDetails> {
     })
 }
 
-fn contains_pump_instruction(response: &Value) -> bool {
+pub fn contains_pump_instruction(response: &Value) -> bool {
     if let Some(logs) = response
         .get("params")
         .and_then(|p| p.get("result"))
