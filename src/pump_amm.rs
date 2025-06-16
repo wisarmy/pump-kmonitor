@@ -17,8 +17,8 @@ pub struct AmmTradeEvent {
     pub success: bool,
     pub pool: String,
     pub user: String,
-    pub token_amount: u64, // 代币数量 (买入时获得，卖出时支付)
-    pub sol_amount: u64,   // SOL数量 (买入时支付，卖出时获得)
+    pub token_amount: u64,
+    pub sol_amount: u64,
     pub is_buy: bool,
     pub timestamp: i64,
     pub pool_base_token_reserves: u64,
@@ -241,7 +241,7 @@ pub fn parse_amm_trade_event(response: &Value) -> Option<AmmTradeEvent> {
                         "Found program data: {}",
                         &data_str[..std::cmp::min(100, data_str.len())]
                     );
-                    if let Some(trade_data) = decode_and_parse_amm_program_data(data_str, is_buy) {
+                    if let Some(trade_data) = decode_and_parse_amm_program_data(data_str) {
                         return Some(AmmTradeEvent {
                             signature,
                             slot,
@@ -250,13 +250,13 @@ pub fn parse_amm_trade_event(response: &Value) -> Option<AmmTradeEvent> {
                             user: trade_data.1,
                             token_amount: trade_data.2,
                             sol_amount: trade_data.3,
-                            is_buy: trade_data.4,
-                            timestamp: trade_data.5,
-                            pool_base_token_reserves: trade_data.6,
-                            pool_quote_token_reserves: trade_data.7,
-                            lp_fee: trade_data.8,
-                            protocol_fee: trade_data.9,
-                            coin_creator_fee: trade_data.10,
+                            is_buy: is_buy,
+                            timestamp: trade_data.4,
+                            pool_base_token_reserves: trade_data.5,
+                            pool_quote_token_reserves: trade_data.6,
+                            lp_fee: trade_data.7,
+                            protocol_fee: trade_data.8,
+                            coin_creator_fee: trade_data.9,
                         });
                     }
                 }
@@ -269,8 +269,7 @@ pub fn parse_amm_trade_event(response: &Value) -> Option<AmmTradeEvent> {
 
 pub fn decode_and_parse_amm_program_data(
     program_data: &str,
-    is_buy: bool,
-) -> Option<(String, String, u64, u64, bool, i64, u64, u64, u64, u64, u64)> {
+) -> Option<(String, String, u64, u64, i64, u64, u64, u64, u64, u64)> {
     // Decode base64 data
     let decoded = general_purpose::STANDARD.decode(program_data).ok()?;
     debug!("Decoded AMM program data length: {}", decoded.len());
@@ -308,8 +307,6 @@ pub fn decode_and_parse_amm_program_data(
     };
     pos += 8;
 
-    // Use the is_buy parameter from log analysis instead of guessing from data
-
     // Skip userBaseTokenReserves and userQuoteTokenReserves (16 bytes)
     pos += 16;
 
@@ -330,21 +327,18 @@ pub fn decode_and_parse_amm_program_data(
     pos += 8;
 
     // Read actual amount field (8 bytes) - either quoteAmountIn (buy) or quoteAmountOut (sell)
-    let actual_quote_amount = {
+    let quote_amount = {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&decoded[pos..pos + 8]);
         u64::from_le_bytes(bytes)
     };
-    pos += 8;
-
-    // 根据交易类型确定代币数量和SOL数量
-    let (token_amount, sol_amount) = if is_buy {
-        // Buy: baseAmountOut = 获得的代币, quoteAmountIn = 支付的SOL
-        (base_amount, actual_quote_amount)
+    let (sol_amount, token_amount) = if pool_base_token_reserves > pool_quote_token_reserves {
+        (quote_amount, base_amount)
     } else {
-        // Sell: baseAmountIn = 卖出的代币, quoteAmountOut = 获得的SOL
-        (base_amount, actual_quote_amount)
+        (base_amount, quote_amount)
     };
+
+    pos += 8;
 
     // Skip lpFeeBasisPoints (8 bytes)
     pos += 8;
@@ -409,8 +403,8 @@ pub fn decode_and_parse_amm_program_data(
     };
 
     debug!(
-        "Decoded AMM TradeEvent: pool={}, user={}, token_amount={}, sol_amount={}, is_buy={}, timestamp={}, quote_limit={}",
-        pool, user, token_amount, sol_amount, is_buy, timestamp, quote_limit
+        "Decoded AMM TradeEvent: pool={}, user={}, token_amount={}, sol_amount={}, timestamp={}, quote_limit={}",
+        pool, user, token_amount, sol_amount, timestamp, quote_limit
     );
 
     Some((
@@ -418,7 +412,6 @@ pub fn decode_and_parse_amm_program_data(
         user,
         token_amount,
         sol_amount,
-        is_buy,
         timestamp,
         pool_base_token_reserves,
         pool_quote_token_reserves,
