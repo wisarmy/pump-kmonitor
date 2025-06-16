@@ -2,13 +2,35 @@ use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose};
 use rust_decimal::Decimal;
 use serde_json::Value;
+use solana_sdk::pubkey::Pubkey;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::constant::PUMP_AMM_PROGRAM;
+use crate::get_rpc_client;
 use crate::kline::KLineManager;
 use crate::websocket::WebSocketMonitor;
+
+#[derive(Debug, Clone)]
+pub struct AmmPoolData {
+    pub base_token_mint: String,
+    pub quote_token_mint: String,
+}
+
+impl AmmPoolData {
+    pub fn get_mint(&self) -> Option<String> {
+        let wsol = spl_token::native_mint::id().to_string();
+        if self.base_token_mint == wsol {
+            Some(self.quote_token_mint.clone())
+        } else if self.quote_token_mint == wsol {
+            Some(self.base_token_mint.clone())
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct AmmTradeEvent {
@@ -84,6 +106,12 @@ pub fn handle_amm_message(response: &Value, kline_manager: Arc<Mutex<KLineManage
             let sol_amount = details.sol_amount_formatted;
             let token_amount = details.token_amount_formatted;
 
+            // get pool data
+            let pool_data = get_amm_pool(Pubkey::from_str(&pool_clone)?)?;
+            let mint = pool_data
+                .get_mint()
+                .ok_or_else(|| anyhow::anyhow!("Failed to get mint from pool data"))?;
+
             tokio::spawn(async move {
                 let manager = kline_manager.lock().await;
                 if let Err(e) = manager
@@ -95,7 +123,7 @@ pub fn handle_amm_message(response: &Value, kline_manager: Arc<Mutex<KLineManage
             });
 
             info!(
-                "{} {} [AMM]: signature= {}, pool= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, lp_fee= {:.6}, protocol_fee= {:.6}, creator_fee= {:.6}, success= {}, time= {}",
+                "{} {} [AMM]: signature= {}, pool= {}, mint= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, lp_fee= {:.6}, protocol_fee= {:.6}, creator_fee= {:.6}, success= {}, time= {}",
                 if amm_trade_event.is_buy {
                     "🟢"
                 } else {
@@ -108,6 +136,7 @@ pub fn handle_amm_message(response: &Value, kline_manager: Arc<Mutex<KLineManage
                 },
                 amm_trade_event.signature,
                 amm_trade_event.pool,
+                mint,
                 amm_trade_event.user,
                 details.sol_amount_formatted,
                 details.token_amount_formatted,
@@ -492,4 +521,33 @@ pub fn contains_amm_instruction(response: &Value) -> bool {
     }
     debug!("contains_amm_instruction - no logs found");
     false
+}
+
+fn get_amm_pool(pool: Pubkey) -> Result<AmmPoolData> {
+    let client = get_rpc_client().unwrap();
+    let data = client.get_account_data(&pool)?;
+
+    if data.len() < 200 {
+        return Err(anyhow::anyhow!("Pool data too short: {} bytes", data.len()));
+    }
+
+    let mut pos = 0;
+
+    // Skip discriminator (8 bytes)
+    pos += 8;
+
+    // Skip some bytes
+    pos += 35;
+
+    // Read base token mint (32 bytes)
+    let base_token_mint = bs58::encode(&data[pos..pos + 32]).into_string();
+    pos += 32;
+
+    // Read quote token mint (32 bytes)
+    let quote_token_mint = bs58::encode(&data[pos..pos + 32]).into_string();
+
+    Ok(AmmPoolData {
+        base_token_mint,
+        quote_token_mint,
+    })
 }
