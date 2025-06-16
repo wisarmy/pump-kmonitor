@@ -165,11 +165,14 @@ impl WebSocketMonitor {
                     // check if response contains "method" field
                     if let Some(method) = response.get("method") {
                         if method == "logsNotification" {
+                            debug!("Received {} logsNotification", self.monitor_name);
                             if let Err(e) =
                                 message_handler(&response, Arc::clone(&self.kline_manager))
                             {
                                 debug!("{} message handling failed: {}", self.monitor_name, e);
                             }
+                        } else {
+                            debug!("Received {} method: {}", self.monitor_name, method);
                         }
                     } else {
                         debug!(

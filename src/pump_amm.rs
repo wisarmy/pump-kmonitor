@@ -17,8 +17,8 @@ pub struct AmmTradeEvent {
     pub success: bool,
     pub pool: String,
     pub user: String,
-    pub base_amount_out: u64,
-    pub quote_amount_in: u64,
+    pub token_amount: u64, // 代币数量 (买入时获得，卖出时支付)
+    pub sol_amount: u64,   // SOL数量 (买入时支付，卖出时获得)
     pub is_buy: bool,
     pub timestamp: i64,
     pub pool_base_token_reserves: u64,
@@ -55,6 +55,8 @@ pub async fn connect_websocket(
 }
 
 pub fn handle_amm_message(response: &Value, kline_manager: Arc<Mutex<KLineManager>>) -> Result<()> {
+    debug!("Processing AMM message: {:#?}", response);
+
     if let Some(amm_trade_event) = parse_amm_trade_event(response) {
         if let Some(details) = calculate_amm_trade_details(&amm_trade_event) {
             // Skip trades with zero or invalid prices to prevent "low": "0" issues
@@ -129,6 +131,32 @@ pub fn handle_amm_message(response: &Value, kline_manager: Arc<Mutex<KLineManage
         // Check if contains AMM instruction but parsing failed
         if contains_amm_instruction(response) {
             debug!("Contains AMM instruction but parsing failed");
+        } else {
+            debug!("No AMM instruction found in message");
+
+            // Print some logs for debugging
+            if let Some(logs) = response
+                .get("params")
+                .and_then(|p| p.get("result"))
+                .and_then(|r| r.get("value"))
+                .and_then(|v| v.get("logs"))
+                .and_then(|l| l.as_array())
+            {
+                let amm_logs: Vec<_> = logs
+                    .iter()
+                    .filter_map(|log| log.as_str())
+                    .filter(|log_str| {
+                        log_str.contains("pAMMBay6")
+                            || log_str.contains("Instruction: Buy")
+                            || log_str.contains("Instruction: Sell")
+                            || log_str.starts_with("Program data:")
+                    })
+                    .collect();
+
+                if !amm_logs.is_empty() {
+                    debug!("Relevant AMM logs found: {:#?}", amm_logs);
+                }
+            }
         }
     }
     Ok(())
@@ -145,46 +173,83 @@ pub fn parse_amm_trade_event(response: &Value) -> Option<AmmTradeEvent> {
     let slot = context.get("slot")?.as_u64()?;
     let success = value.get("err").map(|v| v.is_null()).unwrap_or(false);
 
+    debug!(
+        "AMM transaction - signature: {}, success: {}",
+        signature, success
+    );
+
     // Check if logs contain AMM Buy/Sell instructions
     let logs = value.get("logs")?.as_array()?;
-    let has_amm_instruction = logs.iter().any(|log| {
+    let has_amm_program = logs.iter().any(|log| {
         if let Some(log_str) = log.as_str() {
             log_str.contains(&format!("Program {} invoke", PUMP_AMM_PROGRAM))
-                && (log_str.contains("Program log: Instruction: Buy")
-                    || log_str.contains("Program log: Instruction: Sell"))
         } else {
             false
         }
     });
 
-    if !has_amm_instruction {
+    // Determine buy/sell from logs
+    let mut is_buy_transaction = None;
+    for log in logs {
+        if let Some(log_str) = log.as_str() {
+            if log_str.contains("Program log: Instruction: Buy") {
+                is_buy_transaction = Some(true);
+                break;
+            } else if log_str.contains("Program log: Instruction: Sell") {
+                is_buy_transaction = Some(false);
+                break;
+            }
+        }
+    }
+
+    let has_program_data = logs.iter().any(|log| {
+        if let Some(log_str) = log.as_str() {
+            log_str.starts_with("Program data: ")
+        } else {
+            false
+        }
+    });
+
+    debug!(
+        "AMM check - has_amm_program: {}, is_buy: {:?}, has_program_data: {}",
+        has_amm_program, is_buy_transaction, has_program_data
+    );
+
+    if !has_amm_program {
+        debug!("Missing AMM program in logs");
         return None;
     }
 
-    // Extract and parse program data that comes AFTER Buy/Sell instruction
-    let mut found_buy_sell = false;
+    if is_buy_transaction.is_none() {
+        debug!("Missing Buy/Sell instruction in logs");
+        return None;
+    }
+
+    if !has_program_data {
+        debug!("Missing program data in logs");
+        return None;
+    }
+
+    let is_buy = is_buy_transaction.unwrap();
+
+    // Extract and parse program data - look for any program data in AMM context
     for log in logs {
         if let Some(log_str) = log.as_str() {
-            // Check if this is an AMM Buy/Sell instruction
-            if log_str.contains("Program log: Instruction: Buy")
-                || log_str.contains("Program log: Instruction: Sell")
-            {
-                found_buy_sell = true;
-                continue;
-            }
-
-            // Only parse program data if we've seen a Buy/Sell instruction before
-            if found_buy_sell && log_str.starts_with("Program data: ") {
+            if log_str.starts_with("Program data: ") {
                 if let Some(data_str) = log_str.strip_prefix("Program data: ") {
-                    if let Some(trade_data) = decode_and_parse_amm_program_data(data_str) {
+                    debug!(
+                        "Found program data: {}",
+                        &data_str[..std::cmp::min(100, data_str.len())]
+                    );
+                    if let Some(trade_data) = decode_and_parse_amm_program_data(data_str, is_buy) {
                         return Some(AmmTradeEvent {
                             signature,
                             slot,
                             success,
                             pool: trade_data.0,
                             user: trade_data.1,
-                            base_amount_out: trade_data.2,
-                            quote_amount_in: trade_data.3,
+                            token_amount: trade_data.2,
+                            sol_amount: trade_data.3,
                             is_buy: trade_data.4,
                             timestamp: trade_data.5,
                             pool_base_token_reserves: trade_data.6,
@@ -204,17 +269,22 @@ pub fn parse_amm_trade_event(response: &Value) -> Option<AmmTradeEvent> {
 
 pub fn decode_and_parse_amm_program_data(
     program_data: &str,
+    is_buy: bool,
 ) -> Option<(String, String, u64, u64, bool, i64, u64, u64, u64, u64, u64)> {
     // Decode base64 data
     let decoded = general_purpose::STANDARD.decode(program_data).ok()?;
+    debug!("Decoded AMM program data length: {}", decoded.len());
 
     if decoded.len() < 200 {
+        warn!("AMM program data too short: {} bytes", decoded.len());
         return None;
     }
 
-    let mut pos = 0;
+    // Skip first 8 bytes of event identifier
+    let _event_type = &decoded[..8];
+    let mut pos = 8;
 
-    // Read timestamp (8 bytes) - at the beginning
+    // Read timestamp (8 bytes)
     let timestamp = {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&decoded[pos..pos + 8]);
@@ -222,32 +292,26 @@ pub fn decode_and_parse_amm_program_data(
     };
     pos += 8;
 
-    // Read baseAmountOut (8 bytes)
-    let base_amount_out = {
+    // Read second field (8 bytes) - either baseAmountOut (buy) or baseAmountIn (sell)
+    let base_amount = {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&decoded[pos..pos + 8]);
         u64::from_le_bytes(bytes)
     };
     pos += 8;
 
-    // Read maxQuoteAmountIn (8 bytes)
-    let _max_quote_amount_in = {
+    // Read third field (8 bytes) - either maxQuoteAmountIn (buy) or minQuoteAmountOut (sell)
+    let quote_limit = {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&decoded[pos..pos + 8]);
         u64::from_le_bytes(bytes)
     };
     pos += 8;
 
-    // Skip userBaseTokenReserves (8 bytes)
-    pos += 8;
+    // Use the is_buy parameter from log analysis instead of guessing from data
 
-    // Read userQuoteTokenReserves (8 bytes) - this is the actual quote amount in
-    let quote_amount_in = {
-        let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(&decoded[pos..pos + 8]);
-        u64::from_le_bytes(bytes)
-    };
-    pos += 8;
+    // Skip userBaseTokenReserves and userQuoteTokenReserves (16 bytes)
+    pos += 16;
 
     // Read poolBaseTokenReserves (8 bytes)
     let pool_base_token_reserves = {
@@ -265,13 +329,22 @@ pub fn decode_and_parse_amm_program_data(
     };
     pos += 8;
 
-    // Read quoteAmountIn (8 bytes) - the actual amount used
-    let actual_quote_amount_in = {
+    // Read actual amount field (8 bytes) - either quoteAmountIn (buy) or quoteAmountOut (sell)
+    let actual_quote_amount = {
         let mut bytes = [0u8; 8];
         bytes.copy_from_slice(&decoded[pos..pos + 8]);
         u64::from_le_bytes(bytes)
     };
     pos += 8;
+
+    // 根据交易类型确定代币数量和SOL数量
+    let (token_amount, sol_amount) = if is_buy {
+        // Buy: baseAmountOut = 获得的代币, quoteAmountIn = 支付的SOL
+        (base_amount, actual_quote_amount)
+    } else {
+        // Sell: baseAmountIn = 卖出的代币, quoteAmountOut = 获得的SOL
+        (base_amount, actual_quote_amount)
+    };
 
     // Skip lpFeeBasisPoints (8 bytes)
     pos += 8;
@@ -295,11 +368,8 @@ pub fn decode_and_parse_amm_program_data(
     };
     pos += 8;
 
-    // Skip quoteAmountInWithLpFee (8 bytes)
-    pos += 8;
-
-    // Skip userQuoteAmountIn (8 bytes)
-    pos += 8;
+    // Skip intermediate fields (16 bytes)
+    pos += 16;
 
     // Read pool address (32 bytes)
     let pool_bytes = &decoded[pos..pos + 32];
@@ -338,26 +408,16 @@ pub fn decode_and_parse_amm_program_data(
         0
     };
 
-    // Determine if it's a buy (base_amount_out > 0 means buying base tokens, which is a buy)
-    let is_buy = base_amount_out > 0;
-
-    // Use the actual quote amount in from the transaction
-    let final_quote_amount = if actual_quote_amount_in > 0 {
-        actual_quote_amount_in
-    } else {
-        quote_amount_in
-    };
-
     debug!(
-        "Decoded AMM TradeEvent: pool={}, user={}, base_amount_out={}, quote_amount_in={}, is_buy={}, timestamp={}",
-        pool, user, base_amount_out, final_quote_amount, is_buy, timestamp
+        "Decoded AMM TradeEvent: pool={}, user={}, token_amount={}, sol_amount={}, is_buy={}, timestamp={}, quote_limit={}",
+        pool, user, token_amount, sol_amount, is_buy, timestamp, quote_limit
     );
 
     Some((
         pool,
         user,
-        base_amount_out,
-        final_quote_amount,
+        token_amount,
+        sol_amount,
         is_buy,
         timestamp,
         pool_base_token_reserves,
@@ -373,8 +433,8 @@ pub fn calculate_amm_trade_details(amm_trade_event: &AmmTradeEvent) -> Option<Am
     let sol_divisor = Decimal::new(1_000_000_000, 0); // 10^9 for SOL
     let token_divisor = Decimal::new(1_000_000, 0); // 10^6 for tokens
 
-    let token_amount_formatted = Decimal::from(amm_trade_event.base_amount_out) / token_divisor;
-    let sol_amount_formatted = Decimal::from(amm_trade_event.quote_amount_in) / sol_divisor;
+    let token_amount_formatted = Decimal::from(amm_trade_event.token_amount) / token_divisor;
+    let sol_amount_formatted = Decimal::from(amm_trade_event.sol_amount) / sol_divisor;
     let pool_base_formatted =
         Decimal::from(amm_trade_event.pool_base_token_reserves) / token_divisor;
     let pool_quote_formatted =
@@ -410,15 +470,30 @@ pub fn contains_amm_instruction(response: &Value) -> bool {
         .and_then(|v| v.get("logs"))
         .and_then(|l| l.as_array())
     {
-        return logs.iter().any(|log| {
+        let has_amm_program = logs.iter().any(|log| {
             if let Some(log_str) = log.as_str() {
                 log_str.contains(&format!("Program {} invoke", PUMP_AMM_PROGRAM))
-                    && (log_str.contains("Program log: Instruction: Buy")
-                        || log_str.contains("Program log: Instruction: Sell"))
             } else {
                 false
             }
         });
+
+        let has_instruction = logs.iter().any(|log| {
+            if let Some(log_str) = log.as_str() {
+                log_str.contains("Program log: Instruction: Buy")
+                    || log_str.contains("Program log: Instruction: Sell")
+            } else {
+                false
+            }
+        });
+
+        debug!(
+            "contains_amm_instruction check - has_amm_program: {}, has_instruction: {}",
+            has_amm_program, has_instruction
+        );
+
+        return has_amm_program && has_instruction;
     }
+    debug!("contains_amm_instruction - no logs found");
     false
 }
