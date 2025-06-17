@@ -8,7 +8,7 @@ A real-time K-line monitoring system for Pump.fun tokens with automated strategy
 
 - 🔍 **Real-time K-line monitoring**: WebSocket connection to Pump.fun for live trading data
 - 📈 **Strategy detection**: Automated pattern recognition for consecutive rising candles
-- 🌐 **Web interface**: Interactive dashboard for viewing K-line data and statistics  
+- 🌐 **Web interface**: Interactive dashboard for viewing K-line data and statistics
 - 🔔 **Notification system**: DingTalk integration with customizable alerts
 - 💾 **Redis storage**: Efficient data storage and retrieval with automatic cleanup
 - 🎯 **Pattern analysis**: Detects 4 consecutive bullish candles with increasing gains
@@ -46,7 +46,10 @@ cp .env.example .env
 Start the monitoring service to collect K-line data from Pump.fun WebSocket:
 
 ```bash
+# monitor pump
 pump-kmonitor monitor
+# monitor pumpswap amm
+pump-kmonitor monitor-amm
 ```
 
 **What it does:**
