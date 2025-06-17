@@ -116,17 +116,28 @@ pub async fn handle_amm_message(
             let sol_amount = details.sol_amount_formatted;
             let token_amount = details.token_amount_formatted;
 
-            // get pool data
-            let pool_data = get_amm_pool_cached(Pubkey::from_str(&pool_clone)?).await?;
-            let mint = pool_data
-                .get_mint()
-                .ok_or_else(|| anyhow::anyhow!("Failed to get mint from pool data"))?;
-            let mint_clone = mint.clone();
-
             tokio::spawn(async move {
+                // get pool data
+                let pool_data =
+                    match get_amm_pool_cached(Pubkey::from_str(&pool_clone).unwrap()).await {
+                        Ok(data) => data,
+                        Err(e) => {
+                            error!("Failed to get pool data for {}: {}", pool_clone, e);
+                            return;
+                        }
+                    };
+
+                let mint = match pool_data.get_mint() {
+                    Some(mint) => mint,
+                    None => {
+                        error!("Failed to get mint from pool data for {}", pool_clone);
+                        return;
+                    }
+                };
+
                 let manager = kline_manager.lock().await;
                 if let Err(e) = manager
-                    .add_trade(&mint_clone, timestamp, price, sol_amount, token_amount)
+                    .add_trade(&mint, timestamp, price, sol_amount, token_amount)
                     .await
                 {
                     error!("K-line update failed: {}", e);
@@ -134,7 +145,7 @@ pub async fn handle_amm_message(
             });
 
             info!(
-                "{} {} [AMM]: signature= {}, pool= {}, mint= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, lp_fee= {:.6}, protocol_fee= {:.6}, creator_fee= {:.6}, success= {}, time= {}",
+                "{} {} [AMM]: signature= {}, pool= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, lp_fee= {:.6}, protocol_fee= {:.6}, creator_fee= {:.6}, success= {}, time= {}",
                 if amm_trade_event.is_buy {
                     "🟢"
                 } else {
@@ -147,7 +158,6 @@ pub async fn handle_amm_message(
                 },
                 amm_trade_event.signature,
                 amm_trade_event.pool,
-                mint,
                 amm_trade_event.user,
                 details.sol_amount_formatted,
                 details.token_amount_formatted,
