@@ -125,6 +125,7 @@ pub async fn handle_amm_message(
             let price = details.price;
             let sol_amount = details.sol_amount_formatted;
             let token_amount = details.token_amount_formatted;
+            let is_buy = amm_trade_event.is_buy;
 
             tokio::spawn(async move {
                 // get pool data
@@ -147,7 +148,7 @@ pub async fn handle_amm_message(
 
                 let manager = kline_manager.lock().await;
                 if let Err(e) = manager
-                    .add_trade(&mint, timestamp, price, sol_amount, token_amount)
+                    .add_trade(&mint, timestamp, price, sol_amount, token_amount, is_buy)
                     .await
                 {
                     error!("K-line update failed: {}", e);

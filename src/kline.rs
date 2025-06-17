@@ -15,6 +15,7 @@ pub struct KLineData {
     pub close: String,        // Closing price
     pub volume_sol: String,   // Trading volume (SOL)
     pub volume_token: String, // Trading volume (Token)
+    pub net_flow_sol: String, // Net flow (buy - sell) in SOL
     pub last_update: u64,     // Last update timestamp (seconds)
 }
 
@@ -81,6 +82,7 @@ impl KLineManager {
         price: Decimal,
         sol_volume: Decimal,
         token_volume: Decimal,
+        is_buy: bool,
     ) -> anyhow::Result<()> {
         let minute_ts = Self::get_minute_timestamp(timestamp);
         let key = Self::get_kline_key(mint, minute_ts);
@@ -100,6 +102,7 @@ impl KLineManager {
             let low_decimal: Decimal = kline.low.parse().unwrap_or(price);
             let vol_sol_decimal: Decimal = kline.volume_sol.parse().unwrap_or(Decimal::ZERO);
             let vol_token_decimal: Decimal = kline.volume_token.parse().unwrap_or(Decimal::ZERO);
+            let net_flow_decimal: Decimal = kline.net_flow_sol.parse().unwrap_or(Decimal::ZERO);
 
             // Update highest and lowest prices
             if price > high_decimal {
@@ -116,6 +119,10 @@ impl KLineManager {
             // Accumulate trading volume
             kline.volume_sol = (vol_sol_decimal + sol_volume).to_string();
             kline.volume_token = (vol_token_decimal + token_volume).to_string();
+
+            // Update net flow (buy is positive, sell is negative)
+            let flow_change = if is_buy { sol_volume } else { -sol_volume };
+            kline.net_flow_sol = (net_flow_decimal + flow_change).to_string();
 
             // Check if low price is zero and fix it
             if kline.low == "0" {
@@ -144,6 +151,7 @@ impl KLineManager {
             kline
         } else {
             // Create new K-line
+            let initial_net_flow = if is_buy { sol_volume } else { -sol_volume };
             KLineData {
                 timestamp: minute_ts,
                 open: price.to_string(),
@@ -152,6 +160,7 @@ impl KLineManager {
                 close: price.to_string(),
                 volume_sol: sol_volume.to_string(),
                 volume_token: token_volume.to_string(),
+                net_flow_sol: initial_net_flow.to_string(),
                 last_update: current_time,
             }
         };
