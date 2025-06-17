@@ -45,6 +45,15 @@ jobs:
         with:
           targets: ${{ matrix.platform.target }}
 
+      - name: Cache cargo dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Build
         run: |
           cargo build --release --target ${{ matrix.platform.target }}
