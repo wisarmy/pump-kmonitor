@@ -242,7 +242,9 @@ impl KLineManager {
 
         // If limit is specified, only return the latest N entries
         if let Some(limit) = limit {
-            klines.truncate(limit);
+            if klines.len() > limit {
+                klines = klines.into_iter().rev().take(limit).rev().collect();
+            }
         }
 
         Ok(klines)

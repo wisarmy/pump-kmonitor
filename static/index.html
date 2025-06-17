@@ -195,8 +195,8 @@
                 padding: 20px;
                 border: 1px solid #2a3441;
                 border-radius: 10px;
-                width: 90%;
-                max-width: 1000px;
+                width: 95%;
+                max-width: 1400px;
                 height: 90%;
                 position: relative;
             }
@@ -259,9 +259,11 @@
             .chart-container {
                 position: relative;
                 height: 70vh;
+                width: 100%;
                 background: #0d1421;
                 border-radius: 10px;
-                padding: 20px;
+                padding: 10px;
+                box-sizing: border-box;
             }
 
             .loading {
@@ -306,7 +308,7 @@
 
                 .controls {
                     flex-direction: column;
-                    align-items: stretch;
+                    gap: 10px;
                 }
 
                 .search-box {
@@ -314,9 +316,15 @@
                 }
 
                 .modal-content {
-                    width: 95%;
+                    width: 98%;
                     height: 95%;
                     margin: 2.5% auto;
+                    padding: 10px;
+                }
+
+                .chart-container {
+                    padding: 5px;
+                    height: 65vh;
                 }
             }
         </style>
@@ -563,7 +571,7 @@
 
                 try {
                     const response = await fetch(
-                        `/api/mint/${mint}/klines?limit=100`,
+                        `/api/mint/${mint}/klines?limit=200`,
                     );
                     const data = await response.json();
 
