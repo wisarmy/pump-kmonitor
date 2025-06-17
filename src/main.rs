@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use pump_kmonitor::kline::KLineManager;
 use pump_kmonitor::notification::NotificationManager;
 use pump_kmonitor::strategy::StrategyEngine;
-use pump_kmonitor::{logger, pump, pump_amm, web};
+use pump_kmonitor::{logger, pump, pump_amm, redis_helper, web};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -41,6 +41,11 @@ pub async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
     logger::init(true);
+
+    // Initialize Redis connection pool
+    println!("🔄 Initializing Redis connection pool...");
+    redis_helper::init_pool().await?;
+    println!("✅ Redis connection pool initialized successfully");
 
     match cli.command {
         Commands::Monitor => {

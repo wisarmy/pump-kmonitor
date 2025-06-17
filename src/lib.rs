@@ -11,6 +11,7 @@ pub mod logger;
 pub mod notification;
 pub mod pump;
 pub mod pump_amm;
+pub mod redis_helper;
 pub mod strategy;
 pub mod web;
 pub mod websocket;

@@ -1,5 +1,6 @@
+use crate::redis_helper;
 use chrono::{Local, TimeZone, Timelike};
-use redis::{AsyncCommands, Client};
+use redis::AsyncCommands;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -18,7 +19,6 @@ pub struct KLineData {
 }
 
 pub struct KLineManager {
-    redis_client: Client,
     idle_timeout: Duration,
 }
 
@@ -27,38 +27,22 @@ impl KLineManager {
         // Load .env file if it exists
         let _ = dotenvy::dotenv();
 
-        // Get Redis URL from environment variable
-        let redis_url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
-
         // Get K-line timeout from environment variable
         let timeout_secs = std::env::var("KLINE_TIMEOUT_SECS")
             .unwrap_or_else(|_| "60".to_string())
             .parse()
             .unwrap_or(60);
 
-        // Connect to Redis using configuration
-        let client = Client::open(redis_url)?;
-
-        // Test connection
-        let mut con = client.get_multiplexed_async_connection().await?;
-        let _: () = redis::cmd("PING").query_async(&mut con).await?;
-
         Ok(Self {
-            redis_client: client,
             idle_timeout: Duration::from_secs(timeout_secs),
         })
     }
 
-    pub async fn with_redis_url(redis_url: &str, timeout_secs: u64) -> anyhow::Result<Self> {
-        let client = Client::open(redis_url)?;
-
-        // Test connection
-        let mut con = client.get_multiplexed_async_connection().await?;
-        let _: () = redis::cmd("PING").query_async(&mut con).await?;
+    pub async fn with_redis_url(_redis_url: &str, timeout_secs: u64) -> anyhow::Result<Self> {
+        // Redis URL is ignored since we use the global pool
+        warn!("with_redis_url is deprecated, using global Redis pool instead");
 
         Ok(Self {
-            redis_client: client,
             idle_timeout: Duration::from_secs(timeout_secs),
         })
     }
@@ -102,7 +86,7 @@ impl KLineManager {
         let key = Self::get_kline_key(mint, minute_ts);
         let current_time = chrono::Utc::now().timestamp() as u64;
 
-        let mut con = self.redis_client.get_multiplexed_async_connection().await?;
+        let mut con = redis_helper::get_connection().await?;
 
         // Check if K-line for this minute already exists
         let existing: Option<String> = con.get(&key).await?;
@@ -132,7 +116,7 @@ impl KLineManager {
             // Accumulate trading volume
             kline.volume_sol = (vol_sol_decimal + sol_volume).to_string();
             kline.volume_token = (vol_token_decimal + token_volume).to_string();
-            
+
             // Check if low price is zero and fix it
             if kline.low == "0" {
                 warn!(
@@ -147,7 +131,7 @@ impl KLineManager {
                 let high_decimal_current: Decimal = kline.high.parse().unwrap_or(Decimal::ZERO);
                 let price_increase = (high_decimal_current - open_decimal) / open_decimal;
                 let thousand_percent = Decimal::new(100, 0); // 10000% = 100.0
-                
+
                 if price_increase > thousand_percent {
                     let increase_percentage = price_increase * Decimal::new(100, 0);
                     warn!(
@@ -185,7 +169,7 @@ impl KLineManager {
 
     // Check and delete all K-lines for inactive mints
     pub async fn cleanup_idle_klines(&self) -> anyhow::Result<()> {
-        let mut con = self.redis_client.get_multiplexed_async_connection().await?;
+        let mut con = redis_helper::get_connection().await?;
         let current_time = chrono::Utc::now().timestamp() as u64;
 
         // Get all mint activity keys
@@ -239,7 +223,7 @@ impl KLineManager {
         mint: &str,
         limit: Option<usize>,
     ) -> anyhow::Result<Vec<KLineData>> {
-        let mut con = self.redis_client.get_multiplexed_async_connection().await?;
+        let mut con = redis_helper::get_connection().await?;
         let pattern = Self::get_mint_pattern(mint);
 
         let keys: Vec<String> = con.keys(&pattern).await?;
@@ -269,7 +253,7 @@ impl KLineManager {
         &self,
         limit_per_mint: usize,
     ) -> anyhow::Result<Vec<(String, KLineData)>> {
-        let mut con = self.redis_client.get_multiplexed_async_connection().await?;
+        let mut con = redis_helper::get_connection().await?;
         let keys: Vec<String> = con.keys("kline:*:*").await?;
 
         use std::collections::HashMap;
@@ -304,7 +288,7 @@ impl KLineManager {
 
     // Get statistics
     pub async fn get_stats(&self) -> anyhow::Result<(usize, usize)> {
-        let mut con = self.redis_client.get_multiplexed_async_connection().await?;
+        let mut con = redis_helper::get_connection().await?;
         let keys: Vec<String> = con.keys("kline:*:*").await?;
 
         let mut mints = std::collections::HashSet::new();
@@ -320,7 +304,7 @@ impl KLineManager {
 
     // Get active mint statistics
     pub async fn get_active_mints(&self) -> anyhow::Result<Vec<(String, u64)>> {
-        let mut con = self.redis_client.get_multiplexed_async_connection().await?;
+        let mut con = redis_helper::get_connection().await?;
         let activity_keys: Vec<String> = con.keys("mint_activity:*").await?;
 
         let mut active_mints = Vec::new();
