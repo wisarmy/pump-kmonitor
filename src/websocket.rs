@@ -30,9 +30,10 @@ impl WebSocketMonitor {
         }
     }
 
-    pub async fn start<F>(&self, message_handler: F) -> Result<()>
+    pub async fn start<F, Fut>(&self, message_handler: F) -> Result<()>
     where
-        F: Fn(&Value, Arc<Mutex<KLineManager>>) -> Result<()> + Send + Sync + 'static,
+        F: Fn(&Value, Arc<Mutex<KLineManager>>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
     {
         let mut reconnect_attempts = 0;
         const MAX_RECONNECT_ATTEMPTS: u32 = 10;
@@ -73,9 +74,10 @@ impl WebSocketMonitor {
         }
     }
 
-    async fn connect_internal<F>(&self, message_handler: &F) -> Result<()>
+    async fn connect_internal<F, Fut>(&self, message_handler: &F) -> Result<()>
     where
-        F: Fn(&Value, Arc<Mutex<KLineManager>>) -> Result<()> + Send + Sync + 'static,
+        F: Fn(&Value, Arc<Mutex<KLineManager>>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
     {
         info!(
             "Connecting to {} WebSocket server: {}",
@@ -167,7 +169,7 @@ impl WebSocketMonitor {
                         if method == "logsNotification" {
                             debug!("Received {} logsNotification", self.monitor_name);
                             if let Err(e) =
-                                message_handler(&response, Arc::clone(&self.kline_manager))
+                                message_handler(&response, Arc::clone(&self.kline_manager)).await
                             {
                                 debug!("{} message handling failed: {}", self.monitor_name, e);
                             }

@@ -50,10 +50,17 @@ pub async fn connect_websocket(
         "PUMP".to_string(),
     );
 
-    monitor.start(handle_pump_message).await
+    monitor
+        .start(
+            |response: &Value, kline_manager: Arc<Mutex<KLineManager>>| {
+                let response = response.clone();
+                async move { handle_pump_message(&response, kline_manager).await }
+            },
+        )
+        .await
 }
 
-pub fn handle_pump_message(
+pub async fn handle_pump_message(
     response: &Value,
     kline_manager: Arc<Mutex<KLineManager>>,
 ) -> Result<()> {

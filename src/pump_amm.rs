@@ -73,10 +73,20 @@ pub async fn connect_websocket(
         "AMM".to_string(),
     );
 
-    monitor.start(handle_amm_message).await
+    monitor
+        .start(
+            |response: &Value, kline_manager: Arc<Mutex<KLineManager>>| {
+                let response = response.clone();
+                async move { handle_amm_message(&response, kline_manager).await }
+            },
+        )
+        .await
 }
 
-pub fn handle_amm_message(response: &Value, kline_manager: Arc<Mutex<KLineManager>>) -> Result<()> {
+pub async fn handle_amm_message(
+    response: &Value,
+    kline_manager: Arc<Mutex<KLineManager>>,
+) -> Result<()> {
     debug!("Processing AMM message: {:#?}", response);
 
     if let Some(amm_trade_event) = parse_amm_trade_event(response) {
@@ -107,7 +117,7 @@ pub fn handle_amm_message(response: &Value, kline_manager: Arc<Mutex<KLineManage
             let token_amount = details.token_amount_formatted;
 
             // get pool data
-            let pool_data = get_amm_pool_cached(Pubkey::from_str(&pool_clone)?)?;
+            let pool_data = get_amm_pool_cached(Pubkey::from_str(&pool_clone)?).await?;
             let mint = pool_data
                 .get_mint()
                 .ok_or_else(|| anyhow::anyhow!("Failed to get mint from pool data"))?;
@@ -528,40 +538,32 @@ fn get_pool_key(pool: &str) -> String {
     format!("pool:{}", pool)
 }
 
-fn get_amm_pool_cached(pool: Pubkey) -> Result<AmmPoolData> {
-    // Use spawn_blocking to avoid nested runtime issue
-    let pool_data = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(async {
-            // Use Redis connection pool instead of creating new connection
-            if let Some(data) =
-                redis_helper::get::<_, String>(get_pool_key(&pool.to_string())).await?
-            {
-                debug!("Cache hit for pool {}", pool);
-                let parts: Vec<&str> = data.split(',').collect();
-                if parts.len() == 2 {
-                    return Ok(AmmPoolData {
-                        base_token_mint: parts[0].to_string(),
-                        quote_token_mint: parts[1].to_string(),
-                    });
-                }
-            }
-            debug!("Cache miss for pool {}", pool);
-            let pool_data = get_amm_pool(pool)?;
+async fn get_amm_pool_cached(pool: Pubkey) -> Result<AmmPoolData> {
+    // Use Redis connection pool instead of creating new connection
+    if let Some(data) = redis_helper::get::<_, String>(get_pool_key(&pool.to_string())).await? {
+        debug!("Cache hit for pool {}", pool);
+        let parts: Vec<&str> = data.split(',').collect();
+        if parts.len() == 2 {
+            return Ok(AmmPoolData {
+                base_token_mint: parts[0].to_string(),
+                quote_token_mint: parts[1].to_string(),
+            });
+        }
+    }
+    debug!("Cache miss for pool {}", pool);
+    let pool_data = get_amm_pool(pool)?;
 
-            // Cache the result with 1 hour expiration
-            redis_helper::setex(
-                get_pool_key(&pool.to_string()),
-                format!(
-                    "{},{}",
-                    pool_data.base_token_mint, pool_data.quote_token_mint
-                ),
-                3600, // 1 hour
-            )
-            .await?;
-            Ok(pool_data)
-        })
-    });
-    pool_data
+    // Cache the result with 1 hour expiration
+    redis_helper::setex(
+        get_pool_key(&pool.to_string()),
+        format!(
+            "{},{}",
+            pool_data.base_token_mint, pool_data.quote_token_mint
+        ),
+        3600, // 1 hour
+    )
+    .await?;
+    Ok(pool_data)
 }
 
 fn get_amm_pool(pool: Pubkey) -> Result<AmmPoolData> {
