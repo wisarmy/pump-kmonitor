@@ -99,8 +99,8 @@ pub async fn handle_amm_message(
                 );
                 return Ok(());
             }
-            // Skip micro transactions (less than 0.01 SOL) to keep K-lines clean
-            let min_sol_amount = Decimal::new(1, 2); // 0.01 SOL
+            // Skip micro transactions (less than 0.02 SOL) to keep K-lines clean
+            let min_sol_amount = Decimal::new(2, 2); // 0.02 SOL
             if details.sol_amount_formatted < min_sol_amount {
                 debug!(
                     "Skipping micro AMM transaction: SOL={}, pool={}",

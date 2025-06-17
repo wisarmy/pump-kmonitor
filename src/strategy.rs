@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrategyAlert {
@@ -85,7 +85,7 @@ impl StrategyEngine {
             // 检测连续上涨模式
             if let Some(alert) = self.check_consecutive_rising_pattern(&mint, &klines) {
                 info!("🚨 策略触发: {} - {}", alert.strategy_name, alert.message);
-                
+
                 // 发送通知
                 if let Err(e) = self.notification_manager.send_notification(&alert).await {
                     warn!("❌ 通知发送失败: {}", e);
@@ -108,8 +108,9 @@ impl StrategyEngine {
         klines: &[KLineData],
     ) -> Option<StrategyAlert> {
         let pattern = ConsecutiveRisingPattern::default();
-        
-        if klines.len() < pattern.consecutive_count {
+
+        // 需要足够的K线数据，至少要有 consecutive_count + 1 根（排除最后一根）
+        if klines.len() < pattern.consecutive_count + 1 {
             return None;
         }
 
@@ -117,8 +118,19 @@ impl StrategyEngine {
         let mut sorted_klines = klines.to_vec();
         sorted_klines.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
 
-        // 取最近的N根K线
-        let recent_klines = &sorted_klines[sorted_klines.len() - pattern.consecutive_count..];
+        // 排除最后一根还在形成中的K线，取倒数第2根到倒数第(consecutive_count+1)根
+        let end_index = sorted_klines.len() - 1; // 排除最后一根
+        let start_index = end_index - pattern.consecutive_count;
+        let recent_klines = &sorted_klines[start_index..end_index];
+
+        debug!(
+            "🔍 策略检测 {} - 总K线数: {}, 检测范围: {} 到 {} (排除最后一根), 检测K线数: {}",
+            mint,
+            sorted_klines.len(),
+            start_index,
+            end_index - 1,
+            recent_klines.len()
+        );
 
         // 检查是否连续上涨
         let mut gains = Vec::new();
@@ -126,13 +138,13 @@ impl StrategyEngine {
 
         for i in 0..recent_klines.len() {
             let kline = &recent_klines[i];
-            
+
             // 解析开盘价和收盘价
             let open_price = match kline.open.parse::<Decimal>() {
                 Ok(price) => price,
                 Err(_) => continue,
             };
-            
+
             let close_price = match kline.close.parse::<Decimal>() {
                 Ok(price) => price,
                 Err(_) => continue,
@@ -177,6 +189,14 @@ impl StrategyEngine {
         let total_gain: Decimal = gains.iter().sum();
         let gain_sequence: Vec<String> = gains.iter().map(|g| format!("{:.2}%", g)).collect();
 
+        info!(
+            "✅ 连续上涨模式检测成功 {} - 连续{}根阳线, 涨幅序列: [{}], 总涨幅: {:.2}%",
+            mint,
+            pattern.consecutive_count,
+            gain_sequence.join(", "),
+            total_gain
+        );
+
         let message = format!(
             "发现连续{}根递增上涨K线！总涨幅: {:.2}%, 涨幅序列: [{}]",
             pattern.consecutive_count,
@@ -196,12 +216,12 @@ impl StrategyEngine {
     /// 持续运行策略检测
     pub async fn run_continuous_check(&mut self, interval_secs: u64) -> Result<()> {
         info!("🔄 开始持续策略检测，检测间隔: {}秒", interval_secs);
-        
+
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
-        
+
         loop {
             interval.tick().await;
-            
+
             if let Err(e) = self.run_strategy_check().await {
                 warn!("❌ 策略检测出错: {}", e);
             }
