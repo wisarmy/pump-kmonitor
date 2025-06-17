@@ -71,8 +71,18 @@ pub async fn handle_pump_message(
                 warn!("Skipping trade with zero price for mint {:#?}", trade_event);
                 return Ok(());
             }
-            // Skip micro transactions (less than 0.01 SOL) to keep K-lines clean
-            let min_sol_amount = Decimal::new(1, 2); // 0.01 SOL
+            // Skip micro transactions to keep K-lines clean
+            let min_sol_amount = std::env::var("MIN_SOL_AMOUNT_PUMP")
+                .unwrap_or_else(|_| "0.01".to_string())
+                .parse::<Decimal>()
+                .unwrap_or_else(|_| Decimal::new(1, 2)); // default 0.01 SOL
+
+            // Log configuration on first use (using static to avoid repeated logs)
+            use std::sync::Once;
+            static ONCE: Once = Once::new();
+            ONCE.call_once(|| {
+                info!("📊 Pump配置 - 最小SOL金额: {}", min_sol_amount);
+            });
             if details.sol_amount_formatted < min_sol_amount {
                 debug!(
                     "Skipping micro transaction: SOL={}, mint={}",

@@ -99,8 +99,18 @@ pub async fn handle_amm_message(
                 );
                 return Ok(());
             }
-            // Skip micro transactions (less than 0.02 SOL) to keep K-lines clean
-            let min_sol_amount = Decimal::new(2, 2); // 0.02 SOL
+            // Skip micro transactions to keep K-lines clean
+            let min_sol_amount = std::env::var("MIN_SOL_AMOUNT_AMM")
+                .unwrap_or_else(|_| "0.02".to_string())
+                .parse::<Decimal>()
+                .unwrap_or_else(|_| Decimal::new(2, 2)); // default 0.02 SOL
+
+            // Log configuration on first use (using static to avoid repeated logs)
+            use std::sync::Once;
+            static ONCE: Once = Once::new();
+            ONCE.call_once(|| {
+                info!("📊 AMM配置 - 最小SOL金额: {}", min_sol_amount);
+            });
             if details.sol_amount_formatted < min_sol_amount {
                 debug!(
                     "Skipping micro AMM transaction: SOL={}, pool={}",
