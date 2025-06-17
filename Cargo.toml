@@ -39,3 +39,6 @@ axum = "0.7.9"
 tower = "0.4.13"
 tower-http = { version = "0.5.2", features = ["fs", "cors"] }
 hyper = "1.5.1"
+
+# Force vendored OpenSSL to avoid system dependency issues
+openssl = { version = "0.10", features = ["vendored"] }
