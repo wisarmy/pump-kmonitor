@@ -89,104 +89,13 @@ pub async fn handle_amm_message(
 ) -> Result<()> {
     debug!("Processing AMM message: {:#?}", response);
 
-    if let Some(amm_trade_event) = parse_amm_trade_event(response) {
-        if let Some(details) = calculate_amm_trade_details(&amm_trade_event) {
-            // Skip trades with zero or invalid prices to prevent "low": "0" issues
-            if details.price.is_zero() {
-                warn!(
-                    "Skipping AMM trade with zero price for pool {:#?}",
-                    amm_trade_event
-                );
-                return Ok(());
+    if let Some(amm_trade_events) = parse_amm_trade_event(response) {
+        debug!("Parsed AMM trade events: {:#?}", amm_trade_events);
+
+        for event in amm_trade_events {
+            if let Err(e) = process_amm_trade_event(event, kline_manager.clone()).await {
+                error!("Failed to process AMM trade event: {}", e);
             }
-            // Skip micro transactions to keep K-lines clean
-            let min_sol_amount = std::env::var("MIN_SOL_AMOUNT_AMM")
-                .unwrap_or_else(|_| "0.02".to_string())
-                .parse::<Decimal>()
-                .unwrap_or_else(|_| Decimal::new(2, 2)); // default 0.02 SOL
-
-            // Log configuration on first use (using static to avoid repeated logs)
-            use std::sync::Once;
-            static ONCE: Once = Once::new();
-            ONCE.call_once(|| {
-                info!("📊 AMM配置 - 最小SOL金额: {}", min_sol_amount);
-            });
-            if details.sol_amount_formatted < min_sol_amount {
-                debug!(
-                    "Skipping micro AMM transaction: SOL={}, pool={}",
-                    details.sol_amount_formatted, amm_trade_event.pool
-                );
-                return Ok(());
-            }
-
-            // For AMM trades, we'll use the pool address as the "mint" for K-line tracking
-            let pool_clone = amm_trade_event.pool.clone();
-            let timestamp = amm_trade_event.timestamp;
-            let price = details.price;
-            let sol_amount = details.sol_amount_formatted;
-            let token_amount = details.token_amount_formatted;
-            let is_buy = amm_trade_event.is_buy;
-
-            tokio::spawn(async move {
-                // get pool data
-                let pool_data =
-                    match get_amm_pool_cached(Pubkey::from_str(&pool_clone).unwrap()).await {
-                        Ok(data) => data,
-                        Err(e) => {
-                            error!("Failed to get pool data for {}: {}", pool_clone, e);
-                            return;
-                        }
-                    };
-
-                let mint = match pool_data.get_mint() {
-                    Some(mint) => mint,
-                    None => {
-                        error!("Failed to get mint from pool data for {}", pool_clone);
-                        return;
-                    }
-                };
-
-                let manager = kline_manager.lock().await;
-                if let Err(e) = manager
-                    .add_trade(&mint, timestamp, price, sol_amount, token_amount, is_buy)
-                    .await
-                {
-                    error!("K-line update failed: {}", e);
-                }
-            });
-
-            info!(
-                "{} {} [AMM]: signature= {}, pool= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, lp_fee= {:.6}, protocol_fee= {:.6}, creator_fee= {:.6}, success= {}, time= {}",
-                if amm_trade_event.is_buy {
-                    "🟢"
-                } else {
-                    "🔴"
-                },
-                if amm_trade_event.is_buy {
-                    "Buy"
-                } else {
-                    "Sell"
-                },
-                amm_trade_event.signature,
-                amm_trade_event.pool,
-                amm_trade_event.user,
-                details.sol_amount_formatted,
-                details.token_amount_formatted,
-                details.price,
-                details.lp_fee_formatted,
-                details.protocol_fee_formatted,
-                details.creator_fee_formatted,
-                amm_trade_event.success,
-                // Convert timestamp to readable format
-                chrono::DateTime::from_timestamp(amm_trade_event.timestamp, 0)
-                    .map(|dt| dt
-                        .with_timezone(&chrono::Local)
-                        .format("%Y-%m-%d %H:%M:%S")
-                        .to_string())
-                    .unwrap_or_else(|| "Invalid timestamp".to_string())
-            );
-        } else {
-            info!("🟡 AMM Trade detected: {:#?}", amm_trade_event);
         }
     } else {
         // Check if contains AMM instruction but parsing failed
@@ -223,7 +132,113 @@ pub async fn handle_amm_message(
     Ok(())
 }
 
-pub fn parse_amm_trade_event(response: &Value) -> Option<AmmTradeEvent> {
+pub async fn process_amm_trade_event(
+    amm_trade_event: AmmTradeEvent,
+    kline_manager: Arc<Mutex<KLineManager>>,
+) -> Result<()> {
+    if let Some(details) = calculate_amm_trade_details(&amm_trade_event) {
+        // Skip trades with zero or invalid prices to prevent "low": "0" issues
+        if details.price.is_zero() {
+            warn!(
+                "Skipping AMM trade with zero price for pool {:#?}",
+                amm_trade_event
+            );
+            return Ok(());
+        }
+        // Skip micro transactions to keep K-lines clean
+        let min_sol_amount = std::env::var("MIN_SOL_AMOUNT_AMM")
+            .unwrap_or_else(|_| "0.02".to_string())
+            .parse::<Decimal>()
+            .unwrap_or_else(|_| Decimal::new(2, 2)); // default 0.02 SOL
+
+        // Log configuration on first use (using static to avoid repeated logs)
+        use std::sync::Once;
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            info!("📊 AMM配置 - 最小SOL金额: {}", min_sol_amount);
+        });
+        if details.sol_amount_formatted < min_sol_amount {
+            debug!(
+                "Skipping micro AMM transaction: SOL={}, pool={}",
+                details.sol_amount_formatted, amm_trade_event.pool
+            );
+            return Ok(());
+        }
+
+        // For AMM trades, we'll use the pool address as the "mint" for K-line tracking
+        let pool_clone = amm_trade_event.pool.clone();
+        let timestamp = amm_trade_event.timestamp;
+        let price = details.price;
+        let sol_amount = details.sol_amount_formatted;
+        let token_amount = details.token_amount_formatted;
+        let is_buy = amm_trade_event.is_buy;
+
+        tokio::spawn(async move {
+            // get pool data
+            let pool_data = match get_amm_pool_cached(Pubkey::from_str(&pool_clone).unwrap()).await
+            {
+                Ok(data) => data,
+                Err(e) => {
+                    error!("Failed to get pool data for {}: {}", pool_clone, e);
+                    return;
+                }
+            };
+
+            let mint = match pool_data.get_mint() {
+                Some(mint) => mint,
+                None => {
+                    error!("Failed to get mint from pool data for {}", pool_clone);
+                    return;
+                }
+            };
+
+            let manager = kline_manager.lock().await;
+            if let Err(e) = manager
+                .add_trade(&mint, timestamp, price, sol_amount, token_amount, is_buy)
+                .await
+            {
+                error!("K-line update failed: {}", e);
+            }
+        });
+
+        info!(
+            "{} {} [AMM]: signature= {}, pool= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, lp_fee= {:.6}, protocol_fee= {:.6}, creator_fee= {:.6}, success= {}, time= {}",
+            if amm_trade_event.is_buy {
+                "🟢"
+            } else {
+                "🔴"
+            },
+            if amm_trade_event.is_buy {
+                "Buy"
+            } else {
+                "Sell"
+            },
+            amm_trade_event.signature,
+            amm_trade_event.pool,
+            amm_trade_event.user,
+            details.sol_amount_formatted,
+            details.token_amount_formatted,
+            details.price,
+            details.lp_fee_formatted,
+            details.protocol_fee_formatted,
+            details.creator_fee_formatted,
+            amm_trade_event.success,
+            // Convert timestamp to readable format
+            chrono::DateTime::from_timestamp(amm_trade_event.timestamp, 0)
+                .map(|dt| dt
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string())
+                .unwrap_or_else(|| "Invalid timestamp".to_string())
+        );
+    } else {
+        info!("🟡 AMM Trade detected: {:#?}", amm_trade_event);
+    }
+
+    Ok(())
+}
+
+pub fn parse_amm_trade_event(response: &Value) -> Option<Vec<AmmTradeEvent>> {
     // Extract params.result
     let result = response.get("params")?.get("result")?;
     let value = result.get("value")?;
@@ -248,24 +263,7 @@ pub fn parse_amm_trade_event(response: &Value) -> Option<AmmTradeEvent> {
             false
         }
     });
-
-    // Determine buy/sell from logs
-    let mut is_buy_transaction = None;
-    for log in logs {
-        if let Some(log_str) = log.as_str() {
-            if log_str.contains("failed") {
-                return None; // Ignore failed transactions
-            }
-            if log_str.contains("Program log: Instruction: Buy") {
-                is_buy_transaction = Some(true);
-                break;
-            } else if log_str.contains("Program log: Instruction: Sell") {
-                is_buy_transaction = Some(false);
-                break;
-            }
-        }
-    }
-
+    // Check for program data
     let has_program_data = logs.iter().any(|log| {
         if let Some(log_str) = log.as_str() {
             log_str.starts_with("Program data: ")
@@ -273,19 +271,30 @@ pub fn parse_amm_trade_event(response: &Value) -> Option<AmmTradeEvent> {
             false
         }
     });
-
-    debug!(
-        "AMM check - has_amm_program: {}, is_buy: {:?}, has_program_data: {}",
-        has_amm_program, is_buy_transaction, has_program_data
-    );
+    // Check for failed instructions
+    let has_failed_instruction = logs.iter().any(|log| {
+        if let Some(log_str) = log.as_str() {
+            log_str.contains("failed")
+        } else {
+            false
+        }
+    });
+    if has_failed_instruction {
+        debug!("Transaction contains failed instruction, ignoring");
+        return None; // Ignore transactions with failed instructions
+    }
+    // Check if logs contain Buy/Sell instructions
+    let has_transaction = logs.iter().any(|log| {
+        if let Some(log_str) = log.as_str() {
+            log_str.contains("Program log: Instruction: Buy")
+                || log_str.contains("Program log: Instruction: Sell")
+        } else {
+            false
+        }
+    });
 
     if !has_amm_program {
         debug!("Missing AMM program in logs");
-        return None;
-    }
-
-    if is_buy_transaction.is_none() {
-        debug!("Missing Buy/Sell instruction in logs");
         return None;
     }
 
@@ -294,11 +303,24 @@ pub fn parse_amm_trade_event(response: &Value) -> Option<AmmTradeEvent> {
         return None;
     }
 
-    let is_buy = is_buy_transaction.unwrap();
+    if !has_transaction {
+        debug!("Missing Buy/Sell instruction in logs");
+        return None;
+    }
+
+    let mut events = vec![];
+    let mut is_buy = false;
 
     // Extract and parse program data - look for any program data in AMM context
     for log in logs {
         if let Some(log_str) = log.as_str() {
+            if log_str.contains("Program log: Instruction: Buy") {
+                is_buy = true;
+                debug!("Found AMM Buy instruction in logs");
+            } else if log_str.contains("Program log: Instruction: Sell") {
+                is_buy = false;
+                debug!("Found AMM Sell instruction in logs");
+            }
             if log_str.starts_with("Program data: ") {
                 if let Some(data_str) = log_str.strip_prefix("Program data: ") {
                     debug!(
@@ -306,8 +328,8 @@ pub fn parse_amm_trade_event(response: &Value) -> Option<AmmTradeEvent> {
                         &data_str[..std::cmp::min(100, data_str.len())]
                     );
                     if let Some(trade_data) = decode_and_parse_amm_program_data(data_str) {
-                        return Some(AmmTradeEvent {
-                            signature,
+                        let trade_event = AmmTradeEvent {
+                            signature: signature.clone(),
                             slot,
                             success,
                             pool: trade_data.0,
@@ -321,14 +343,15 @@ pub fn parse_amm_trade_event(response: &Value) -> Option<AmmTradeEvent> {
                             lp_fee: trade_data.7,
                             protocol_fee: trade_data.8,
                             coin_creator_fee: trade_data.9,
-                        });
+                        };
+                        events.push(trade_event);
                     }
                 }
             }
         }
     }
 
-    None
+    Some(events)
 }
 
 pub fn decode_and_parse_amm_program_data(
