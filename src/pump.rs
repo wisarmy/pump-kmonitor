@@ -109,6 +109,7 @@ pub async fn handle_pump_message(
                         sol_amount,
                         token_amount,
                         is_buy,
+                        false,
                     )
                     .await
                 {

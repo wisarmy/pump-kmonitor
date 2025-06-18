@@ -194,7 +194,15 @@ pub async fn process_amm_trade_event(
 
             let manager = kline_manager.lock().await;
             if let Err(e) = manager
-                .add_trade(&mint, timestamp, price, sol_amount, token_amount, is_buy)
+                .add_trade(
+                    &mint,
+                    timestamp,
+                    price,
+                    sol_amount,
+                    token_amount,
+                    is_buy,
+                    true,
+                )
                 .await
             {
                 error!("K-line update failed: {}", e);

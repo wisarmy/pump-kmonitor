@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{Html, Json},
-    routing::{get, Router},
+    routing::{Router, get},
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
@@ -24,11 +24,12 @@ pub struct ApiResponse<T> {
     pub message: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MintInfo {
     pub mint: String,
     pub last_activity: u64,
     pub kline_count: usize,
+    pub complete: bool,
 }
 
 #[derive(Deserialize)]
@@ -53,14 +54,16 @@ async fn serve_index() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
 }
 
-async fn get_mints(State(state): State<AppState>) -> Result<Json<ApiResponse<Vec<MintInfo>>>, StatusCode> {
+async fn get_mints(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<Vec<MintInfo>>>, StatusCode> {
     let manager = state.kline_manager.lock().await;
-    
+
     match manager.get_active_mints().await {
         Ok(active_mints) => {
             let mut mint_infos = Vec::new();
-            
-            for (mint, last_activity) in active_mints {
+
+            for (mint, last_activity, complete) in active_mints {
                 // Get K-line count for this mint
                 match manager.get_klines_for_mint(&mint, None).await {
                     Ok(klines) => {
@@ -68,6 +71,7 @@ async fn get_mints(State(state): State<AppState>) -> Result<Json<ApiResponse<Vec
                             mint,
                             last_activity,
                             kline_count: klines.len(),
+                            complete,
                         });
                     }
                     Err(_) => {
@@ -75,24 +79,23 @@ async fn get_mints(State(state): State<AppState>) -> Result<Json<ApiResponse<Vec
                             mint,
                             last_activity,
                             kline_count: 0,
+                            complete,
                         });
                     }
                 }
             }
-            
+
             Ok(Json(ApiResponse {
                 success: true,
                 data: Some(mint_infos),
                 message: None,
             }))
         }
-        Err(e) => {
-            Ok(Json(ApiResponse {
-                success: false,
-                data: None,
-                message: Some(format!("Failed to get mints: {}", e)),
-            }))
-        }
+        Err(e) => Ok(Json(ApiResponse {
+            success: false,
+            data: None,
+            message: Some(format!("Failed to get mints: {}", e)),
+        })),
     }
 }
 
@@ -102,47 +105,43 @@ async fn get_klines(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<KLineData>>>, StatusCode> {
     let manager = state.kline_manager.lock().await;
-    
+
     match manager.get_klines_for_mint(&mint, params.limit).await {
-        Ok(klines) => {
-            Ok(Json(ApiResponse {
-                success: true,
-                data: Some(klines),
-                message: None,
-            }))
-        }
-        Err(e) => {
-            Ok(Json(ApiResponse {
-                success: false,
-                data: None,
-                message: Some(format!("Failed to get K-lines: {}", e)),
-            }))
-        }
+        Ok(klines) => Ok(Json(ApiResponse {
+            success: true,
+            data: Some(klines),
+            message: None,
+        })),
+        Err(e) => Ok(Json(ApiResponse {
+            success: false,
+            data: None,
+            message: Some(format!("Failed to get K-lines: {}", e)),
+        })),
     }
 }
 
-async fn get_stats(State(state): State<AppState>) -> Result<Json<ApiResponse<HashMap<String, usize>>>, StatusCode> {
+async fn get_stats(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<HashMap<String, usize>>>, StatusCode> {
     let manager = state.kline_manager.lock().await;
-    
+
     match manager.get_stats().await {
         Ok((mint_count, kline_count)) => {
             let mut stats = HashMap::new();
             stats.insert("total_mints".to_string(), mint_count);
             stats.insert("total_klines".to_string(), kline_count);
-            
+
             Ok(Json(ApiResponse {
                 success: true,
                 data: Some(stats),
                 message: None,
             }))
         }
-        Err(e) => {
-            Ok(Json(ApiResponse {
-                success: false,
-                data: None,
-                message: Some(format!("Failed to get stats: {}", e)),
-            }))
-        }
+        Err(e) => Ok(Json(ApiResponse {
+            success: false,
+            data: None,
+            message: Some(format!("Failed to get stats: {}", e)),
+        })),
     }
 }
 
@@ -151,11 +150,11 @@ pub async fn start_web_server(
     port: u16,
 ) -> anyhow::Result<()> {
     let app = create_web_server(kline_manager).await;
-    
+
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
     info!("Web server starting on http://0.0.0.0:{}", port);
-    
+
     axum::serve(listener, app).await?;
-    
+
     Ok(())
 }

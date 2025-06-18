@@ -19,6 +19,12 @@ pub struct KLineData {
     pub last_update: u64,     // Last update timestamp (seconds)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MintActivity {
+    pub timestamp: u64,
+    pub complete: bool,
+}
+
 pub struct KLineManager {
     idle_timeout: Duration,
 }
@@ -83,6 +89,7 @@ impl KLineManager {
         sol_volume: Decimal,
         token_volume: Decimal,
         is_buy: bool,
+        complete: bool,
     ) -> anyhow::Result<()> {
         let minute_ts = Self::get_minute_timestamp(timestamp);
         let key = Self::get_kline_key(mint, minute_ts);
@@ -169,9 +176,14 @@ impl KLineManager {
         let kline_json = serde_json::to_string(&kline)?;
         let _: () = con.set(&key, kline_json).await?;
 
-        // Update mint's last activity time
+        // Update mint's last activity time and complete status
         let activity_key = Self::get_mint_activity_key(mint);
-        let _: () = con.set(&activity_key, current_time).await?;
+        let activity = MintActivity {
+            timestamp: current_time,
+            complete,
+        };
+        let activity_json = serde_json::to_string(&activity)?;
+        let _: () = con.set(&activity_key, activity_json).await?;
 
         Ok(())
     }
@@ -186,37 +198,41 @@ impl KLineManager {
         let activity_keys: Vec<String> = con.keys(activity_pattern).await?;
 
         for activity_key in activity_keys {
-            // Get the last activity time for this mint
-            if let Ok(Some(last_activity_str)) =
-                con.get::<&str, Option<String>>(&activity_key).await
-            {
-                if let Ok(last_activity) = last_activity_str.parse::<u64>() {
-                    // Check if this mint is inactive
-                    if current_time - last_activity > self.idle_timeout.as_secs() {
-                        // Extract mint address from the activity key
-                        let mint = activity_key.strip_prefix("mint_activity:").unwrap_or("");
+            // Get the last activity data for this mint
+            if let Ok(Some(activity_str)) = con.get::<&str, Option<String>>(&activity_key).await {
+                // Parse as JSON format
+                let last_activity =
+                    if let Ok(activity) = serde_json::from_str::<MintActivity>(&activity_str) {
+                        activity.timestamp
+                    } else {
+                        continue;
+                    };
 
-                        if !mint.is_empty() {
-                            // Find and delete all K-lines for this inactive mint
-                            let kline_pattern = Self::get_mint_pattern(mint);
-                            let kline_keys: Vec<String> = con.keys(&kline_pattern).await?;
+                // Check if this mint is inactive
+                if current_time - last_activity > self.idle_timeout.as_secs() {
+                    // Extract mint address from the activity key
+                    let mint = activity_key.strip_prefix("mint_activity:").unwrap_or("");
 
-                            if !kline_keys.is_empty() {
-                                info!(
-                                    "🗑️ Mint {} inactive for {} seconds, deleting {} K-lines",
-                                    mint,
-                                    current_time - last_activity,
-                                    kline_keys.len()
-                                );
+                    if !mint.is_empty() {
+                        // Find and delete all K-lines for this inactive mint
+                        let kline_pattern = Self::get_mint_pattern(mint);
+                        let kline_keys: Vec<String> = con.keys(&kline_pattern).await?;
 
-                                // Delete all K-lines for this mint
-                                for key in &kline_keys {
-                                    let _: () = con.del(key).await?;
-                                }
+                        if !kline_keys.is_empty() {
+                            info!(
+                                "🗑️ Mint {} inactive for {} seconds, deleting {} K-lines",
+                                mint,
+                                current_time - last_activity,
+                                kline_keys.len()
+                            );
 
-                                // Also delete the activity tracking key
-                                let _: () = con.del(&activity_key).await?;
+                            // Delete all K-lines for this mint
+                            for key in &kline_keys {
+                                let _: () = con.del(key).await?;
                             }
+
+                            // Also delete the activity tracking key
+                            let _: () = con.del(&activity_key).await?;
                         }
                     }
                 }
@@ -314,22 +330,22 @@ impl KLineManager {
     }
 
     // Get active mint statistics
-    pub async fn get_active_mints(&self) -> anyhow::Result<Vec<(String, u64)>> {
+    pub async fn get_active_mints(&self) -> anyhow::Result<Vec<(String, u64, bool)>> {
         let mut con = redis_helper::get_connection().await?;
         let activity_keys: Vec<String> = con.keys("mint_activity:*").await?;
 
         let mut active_mints = Vec::new();
         for activity_key in activity_keys {
-            if let Ok(Some(last_activity_str)) =
-                con.get::<&str, Option<String>>(&activity_key).await
-            {
-                if let Ok(last_activity) = last_activity_str.parse::<u64>() {
-                    let mint = activity_key
-                        .strip_prefix("mint_activity:")
-                        .unwrap_or("")
-                        .to_string();
-                    if !mint.is_empty() {
-                        active_mints.push((mint, last_activity));
+            if let Ok(Some(activity_str)) = con.get::<&str, Option<String>>(&activity_key).await {
+                let mint = activity_key
+                    .strip_prefix("mint_activity:")
+                    .unwrap_or("")
+                    .to_string();
+
+                if !mint.is_empty() {
+                    // Parse as JSON format
+                    if let Ok(activity) = serde_json::from_str::<MintActivity>(&activity_str) {
+                        active_mints.push((mint, activity.timestamp, activity.complete));
                     }
                 }
             }

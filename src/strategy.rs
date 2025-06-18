@@ -68,7 +68,7 @@ impl StrategyEngine {
 
         info!("📊 发现 {} 个活跃 mint", active_mints.len());
 
-        for (mint, last_activity) in active_mints {
+        for (mint, last_activity, _complete) in active_mints {
             // 检查是否需要检测这个mint（避免重复检测相同的数据）
             if let Some(&last_check) = self.last_checked.get(&mint) {
                 if last_activity <= last_check {
