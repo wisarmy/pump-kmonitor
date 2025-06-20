@@ -297,6 +297,19 @@
                 padding: 50px;
             }
 
+            .chart-error {
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: rgba(26, 31, 46, 0.9);
+                border: 1px solid #dc3545;
+                border-radius: 5px;
+                padding: 20px;
+                max-width: 80%;
+                z-index: 10;
+            }
+
             @media (max-width: 768px) {
                 .container {
                     padding: 10px;
@@ -426,10 +439,14 @@
 
                 // Recreate chart with new type
                 if (currentKlineData.length > 0) {
-                    createKlineChart(
-                        document.getElementById("klineChart"),
-                        currentKlineData,
-                    );
+                    const chartCanvas = document.getElementById("klineChart");
+                    if (chartCanvas) {
+                        createKlineChart(chartCanvas, currentKlineData);
+                    } else {
+                        console.error(
+                            "Chart canvas not found in switchChartType",
+                        );
+                    }
                 }
             }
 
@@ -481,6 +498,11 @@
             function displayMints(mints) {
                 const grid = document.getElementById("mintGrid");
 
+                if (!grid) {
+                    console.error("Mint grid element not found");
+                    return;
+                }
+
                 if (mints.length === 0) {
                     grid.innerHTML =
                         '<div class="loading">No active mints found</div>';
@@ -496,7 +518,7 @@
                         const timeAgo = formatTimeAgo(timeDiff);
 
                         return `
-                    <div class="mint-card" onclick="showKlineChart('${mint.mint}')">
+                    <div class="mint-card" data-mint="${mint.mint}">
                         <div class="activity-indicator ${isActive ? "" : "inactive"}"></div>
                         <div class="mint-address">
                             <a href="https://gmgn.ai/sol/token/${mint.mint}" target="_blank" class="mint-link" onclick="event.stopPropagation();">${mint.mint}</a>
@@ -533,10 +555,30 @@
 
             // Show K-line chart
             async function showKlineChart(mint) {
+                console.log("showKlineChart called with mint:", mint);
+
                 const modal = document.getElementById("klineModal");
                 const modalTitle = document.getElementById("modalTitle");
                 const modalMint = document.getElementById("modalMint");
                 const chartCanvas = document.getElementById("klineChart");
+
+                console.log("DOM elements found:", {
+                    modal: !!modal,
+                    modalTitle: !!modalTitle,
+                    modalMint: !!modalMint,
+                    chartCanvas: !!chartCanvas,
+                });
+
+                if (!modal || !modalTitle || !modalMint || !chartCanvas) {
+                    console.error("Required modal elements not found", {
+                        modal: !!modal,
+                        modalTitle: !!modalTitle,
+                        modalMint: !!modalMint,
+                        chartCanvas: !!chartCanvas,
+                        documentReady: document.readyState,
+                    });
+                    return;
+                }
 
                 currentMint = mint;
                 modalTitle.textContent = "K-Line Chart";
@@ -567,7 +609,17 @@
 
             // Load chart data
             async function loadChartData(mint) {
+                console.log("loadChartData called with mint:", mint);
                 const chartCanvas = document.getElementById("klineChart");
+
+                if (!chartCanvas) {
+                    console.error("Chart canvas not found", {
+                        documentReady: document.readyState,
+                        allElements:
+                            document.querySelectorAll("#klineChart").length,
+                    });
+                    return;
+                }
 
                 try {
                     const response = await fetch(
@@ -580,22 +632,54 @@
                         createKlineChart(chartCanvas, currentKlineData);
                     } else {
                         chartCanvas.style.display = "none";
-                        chartCanvas.parentNode.innerHTML =
-                            '<div class="error">Failed to load K-line data: ' +
-                            (data.message || "Unknown error") +
-                            "</div>";
+                        if (chartCanvas.parentNode) {
+                            // Clear any existing error messages
+                            const existingError =
+                                chartCanvas.parentNode.querySelector(
+                                    ".chart-error",
+                                );
+                            if (existingError) {
+                                existingError.remove();
+                            }
+
+                            // Add error message without removing canvas
+                            const errorDiv = document.createElement("div");
+                            errorDiv.className = "chart-error error";
+                            errorDiv.textContent =
+                                "Failed to load K-line data: " +
+                                (data.message || "Unknown error");
+                            chartCanvas.parentNode.appendChild(errorDiv);
+                        }
                     }
                 } catch (error) {
                     chartCanvas.style.display = "none";
-                    chartCanvas.parentNode.innerHTML =
-                        '<div class="error">Failed to load K-line data: ' +
-                        error.message +
-                        "</div>";
+                    if (chartCanvas.parentNode) {
+                        // Clear any existing error messages
+                        const existingError =
+                            chartCanvas.parentNode.querySelector(
+                                ".chart-error",
+                            );
+                        if (existingError) {
+                            existingError.remove();
+                        }
+
+                        // Add error message without removing canvas
+                        const errorDiv = document.createElement("div");
+                        errorDiv.className = "chart-error error";
+                        errorDiv.textContent =
+                            "Failed to load K-line data: " + error.message;
+                        chartCanvas.parentNode.appendChild(errorDiv);
+                    }
                 }
             }
 
             // Create K-line chart
             function createKlineChart(canvas, klineData) {
+                if (!canvas) {
+                    console.error("Canvas is null or undefined");
+                    return;
+                }
+
                 const ctx = canvas.getContext("2d");
 
                 // Destroy existing chart
@@ -609,14 +693,35 @@
 
                 if (klineData.length === 0) {
                     canvas.style.display = "none";
-                    canvas.parentNode.innerHTML =
-                        '<div class="error">No K-line data available</div>';
+                    if (canvas.parentNode) {
+                        // Clear any existing error messages
+                        const existingError =
+                            canvas.parentNode.querySelector(".chart-error");
+                        if (existingError) {
+                            existingError.remove();
+                        }
+
+                        // Add error message without removing canvas
+                        const errorDiv = document.createElement("div");
+                        errorDiv.className = "chart-error error";
+                        errorDiv.textContent = "No K-line data available";
+                        canvas.parentNode.appendChild(errorDiv);
+                    }
                     return;
                 }
 
-                // Ensure canvas is visible
+                // Ensure canvas is visible and clear any error messages
                 canvas.style.display = "block";
-                canvas.parentNode.style.display = "block";
+                if (canvas.parentNode) {
+                    canvas.parentNode.style.display = "block";
+
+                    // Clear any existing error messages
+                    const existingError =
+                        canvas.parentNode.querySelector(".chart-error");
+                    if (existingError) {
+                        existingError.remove();
+                    }
+                }
 
                 let datasets = [];
                 let chartType = currentChartType;
@@ -1484,22 +1589,28 @@
             }
 
             // Modal close functionality
-            document.querySelector(".close").onclick = function () {
-                document.getElementById("klineModal").style.display = "none";
-                if (currentChart) {
-                    currentChart.destroy();
-                    currentChart = null;
-                }
-                if (chartRefreshInterval) {
-                    clearInterval(chartRefreshInterval);
-                    chartRefreshInterval = null;
-                }
-                currentMint = null;
-            };
+            const closeBtn = document.querySelector(".close");
+            if (closeBtn) {
+                closeBtn.onclick = function () {
+                    const modal = document.getElementById("klineModal");
+                    if (modal) {
+                        modal.style.display = "none";
+                    }
+                    if (currentChart) {
+                        currentChart.destroy();
+                        currentChart = null;
+                    }
+                    if (chartRefreshInterval) {
+                        clearInterval(chartRefreshInterval);
+                        chartRefreshInterval = null;
+                    }
+                    currentMint = null;
+                };
+            }
 
             window.onclick = function (event) {
                 const modal = document.getElementById("klineModal");
-                if (event.target === modal) {
+                if (modal && event.target === modal) {
                     modal.style.display = "none";
                     if (currentChart) {
                         currentChart.destroy();
@@ -1513,15 +1624,94 @@
                 }
             };
 
-            // Initialize
-            loadStats();
-            loadMints();
+            // Initialize when DOM is ready
+            function initializeApp() {
+                console.log(
+                    "Initializing app, document ready state:",
+                    document.readyState,
+                );
 
-            // Auto refresh every 30 seconds
-            setInterval(() => {
+                // Verify key elements exist
+                const modal = document.getElementById("klineModal");
+                const chartCanvas = document.getElementById("klineChart");
+                const modalTitle = document.getElementById("modalTitle");
+                const modalMint = document.getElementById("modalMint");
+                const mintGrid = document.getElementById("mintGrid");
+
+                console.log("Complete DOM structure check:", {
+                    modal: !!modal,
+                    chartCanvas: !!chartCanvas,
+                    modalTitle: !!modalTitle,
+                    modalMint: !!modalMint,
+                    mintGrid: !!mintGrid,
+                    canvasParent: chartCanvas
+                        ? !!chartCanvas.parentNode
+                        : false,
+                    modalContent: modal
+                        ? !!modal.querySelector(".modal-content")
+                        : false,
+                    chartContainer: modal
+                        ? !!modal.querySelector(".chart-container")
+                        : false,
+                });
+
+                // If canvas is missing, try to recreate it
+                if (!chartCanvas) {
+                    console.warn("Canvas not found, attempting to recreate...");
+                    const chartContainer =
+                        document.querySelector(".chart-container");
+                    if (chartContainer) {
+                        // Remove any existing content
+                        chartContainer.innerHTML = "";
+                        // Create new canvas
+                        const newCanvas = document.createElement("canvas");
+                        newCanvas.id = "klineChart";
+                        chartContainer.appendChild(newCanvas);
+                        console.log("Canvas recreated successfully");
+                    } else {
+                        console.error(
+                            "Chart container not found, cannot recreate canvas",
+                        );
+                    }
+                }
+
+                // Set up event delegation for mint cards
+                const mintsGrid = document.getElementById("mintGrid");
+                if (mintsGrid) {
+                    mintsGrid.addEventListener("click", function (event) {
+                        const mintCard = event.target.closest(".mint-card");
+                        if (mintCard) {
+                            const mint = mintCard.getAttribute("data-mint");
+                            if (mint) {
+                                console.log("Mint card clicked:", mint);
+                                showKlineChart(mint);
+                            }
+                        }
+                    });
+                } else {
+                    console.error("Mint grid not found for event delegation");
+                }
+
                 loadStats();
                 loadMints();
-            }, 30000);
+
+                // Auto refresh every 30 seconds
+                setInterval(() => {
+                    loadStats();
+                    loadMints();
+                }, 30000);
+            }
+
+            // Wait for DOM to be fully loaded
+            if (document.readyState === "loading") {
+                document.addEventListener("DOMContentLoaded", initializeApp);
+            } else if (
+                document.readyState === "interactive" ||
+                document.readyState === "complete"
+            ) {
+                // DOM already loaded
+                setTimeout(initializeApp, 0);
+            }
         </script>
     </body>
 </html>
