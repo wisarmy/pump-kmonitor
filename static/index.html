@@ -621,10 +621,26 @@
                 let datasets = [];
                 let chartType = currentChartType;
 
+                // Force line chart for single K-line to avoid Chart.js time axis issues
+                if (klineData.length === 1 && chartType === "candlestick") {
+                    chartType = "line";
+                    console.log(
+                        "Switching to line chart for single K-line data point",
+                    );
+                }
+
                 // Clear status information
                 const statusEl = document.getElementById("chartStatus");
                 if (statusEl) {
-                    statusEl.textContent = `Displaying ${klineData.length} K-lines`;
+                    if (
+                        klineData.length === 1 &&
+                        currentChartType === "candlestick" &&
+                        chartType === "line"
+                    ) {
+                        statusEl.textContent = `Displaying ${klineData.length} K-line (Line chart - single data point)`;
+                    } else {
+                        statusEl.textContent = `Displaying ${klineData.length} K-lines`;
+                    }
                 }
 
                 if (chartType === "candlestick") {
@@ -1379,6 +1395,10 @@
 
             // Get line/area chart options
             function getLineOptions() {
+                // Check if we have single data point for special handling
+                const isSinglePoint =
+                    currentKlineData && currentKlineData.length === 1;
+
                 return {
                     responsive: true,
                     maintainAspectRatio: false,
@@ -1414,16 +1434,33 @@
                         x: {
                             type: "time",
                             time: {
-                                unit: "minute",
+                                unit: isSinglePoint ? "second" : "minute",
                                 displayFormats: {
+                                    second: "HH:mm:ss",
                                     minute: "HH:mm",
                                     hour: "HH:mm",
                                     day: "MM-dd",
                                 },
+                                min:
+                                    isSinglePoint && currentKlineData
+                                        ? new Date(
+                                              currentKlineData[0].timestamp *
+                                                  1000 -
+                                                  60000,
+                                          )
+                                        : undefined,
+                                max:
+                                    isSinglePoint && currentKlineData
+                                        ? new Date(
+                                              currentKlineData[0].timestamp *
+                                                  1000 +
+                                                  60000,
+                                          )
+                                        : undefined,
                             },
                             ticks: {
                                 color: "#8b949e",
-                                maxTicksLimit: 10,
+                                maxTicksLimit: isSinglePoint ? 3 : 10,
                             },
                             grid: {
                                 color: "#2a3441",
@@ -1440,6 +1477,7 @@
                             grid: {
                                 color: "#2a3441",
                             },
+                            grace: isSinglePoint ? "10%" : "5%",
                         },
                     },
                 };
