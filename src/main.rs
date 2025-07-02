@@ -3,7 +3,9 @@ use clap::{Parser, Subcommand};
 use pump_kmonitor::kline::KLineManager;
 use pump_kmonitor::notification::NotificationManager;
 use pump_kmonitor::strategy::StrategyEngine;
-use pump_kmonitor::{logger, pump, pump_amm, redis_helper, web};
+use pump_kmonitor::{
+    check_rpc_client_health, init_rpc_client_pool, logger, pump, pump_amm, redis_helper, web,
+};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -46,6 +48,35 @@ pub async fn main() -> Result<()> {
     println!("🔄 Initializing Redis connection pool...");
     redis_helper::init_pool().await?;
     println!("✅ Redis connection pool initialized successfully");
+
+    // Initialize RPC client pool
+    println!("🔄 Initializing RPC client pool...");
+    init_rpc_client_pool().await?;
+    println!("✅ RPC client pool initialized successfully");
+
+    // Check initial RPC client health
+    match check_rpc_client_health().await {
+        Ok(healthy_count) => {
+            println!(
+                "✅ RPC client health check: {} clients healthy",
+                healthy_count
+            );
+        }
+        Err(e) => {
+            println!("⚠️  RPC client health check failed: {}", e);
+        }
+    }
+
+    // Start periodic health monitoring
+    tokio::spawn(async {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300)); // 5 minutes
+        loop {
+            interval.tick().await;
+            if let Err(e) = check_rpc_client_health().await {
+                tracing::warn!("RPC client health check failed: {}", e);
+            }
+        }
+    });
 
     match cli.command {
         Commands::Monitor => {

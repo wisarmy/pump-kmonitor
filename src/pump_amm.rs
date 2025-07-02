@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 use crate::constant::PUMP_AMM_PROGRAM;
 use crate::kline::KLineManager;
 use crate::websocket::WebSocketMonitor;
-use crate::{get_rpc_client, redis_helper};
+use crate::{get_rpc_client_with_retry, redis_helper};
 
 #[derive(Debug, Clone)]
 pub struct AmmPoolData {
@@ -175,8 +175,14 @@ pub async fn process_amm_trade_event(
 
         tokio::spawn(async move {
             // get pool data
-            let pool_data = match get_amm_pool_cached(Pubkey::from_str(&pool_clone).unwrap()).await
-            {
+            let pool_pubkey = match Pubkey::from_str(&pool_clone) {
+                Ok(pubkey) => pubkey,
+                Err(e) => {
+                    error!("Failed to parse pool pubkey {}: {}", pool_clone, e);
+                    return;
+                }
+            };
+            let pool_data = match get_amm_pool_cached(pool_pubkey).await {
                 Ok(data) => data,
                 Err(e) => {
                     error!("Failed to get pool data for {}: {}", pool_clone, e);
@@ -603,7 +609,7 @@ async fn get_amm_pool_cached(pool: Pubkey) -> Result<AmmPoolData> {
         }
     }
     debug!("Cache miss for pool {}", pool);
-    let pool_data = get_amm_pool(pool)?;
+    let pool_data = get_amm_pool(pool).await?;
 
     // Cache the result with 1 hour expiration
     redis_helper::setex(
@@ -618,9 +624,12 @@ async fn get_amm_pool_cached(pool: Pubkey) -> Result<AmmPoolData> {
     Ok(pool_data)
 }
 
-fn get_amm_pool(pool: Pubkey) -> Result<AmmPoolData> {
-    let client = get_rpc_client().unwrap();
-    let data = client.get_account_data(&pool)?;
+async fn get_amm_pool(pool: Pubkey) -> Result<AmmPoolData> {
+    let data = get_rpc_client_with_retry(
+        |client| client.get_account_data(&pool).map_err(anyhow::Error::from),
+        3, // max 3 retries
+    )
+    .await?;
 
     if data.len() < 200 {
         return Err(anyhow::anyhow!("Pool data too short: {} bytes", data.len()));
