@@ -64,81 +64,13 @@ pub async fn handle_pump_message(
     response: &Value,
     kline_manager: Arc<Mutex<KLineManager>>,
 ) -> Result<()> {
-    if let Some(trade_event) = parse_trade_event(response) {
-        if let Some(details) = calculate_trade_details(&trade_event) {
-            // Skip trades with zero or invalid prices to prevent "low": "0" issues
-            if details.price.is_zero() {
-                warn!("Skipping trade with zero price for mint {:#?}", trade_event);
-                return Ok(());
+    if let Some(trade_events) = parse_trade_event(response) {
+        debug!("Parsed PUMP trade events: {:#?}", trade_events);
+
+        for trade_event in trade_events {
+            if let Err(e) = process_trade_event(trade_event, kline_manager.clone()).await {
+                error!("Failed to process PUMP trade event: {}", e);
             }
-            // Skip micro transactions to keep K-lines clean
-            let min_sol_amount = std::env::var("MIN_SOL_AMOUNT_PUMP")
-                .unwrap_or_else(|_| "0.01".to_string())
-                .parse::<Decimal>()
-                .unwrap_or_else(|_| Decimal::new(1, 2)); // default 0.01 SOL
-
-            // Log configuration on first use (using static to avoid repeated logs)
-            use std::sync::Once;
-            static ONCE: Once = Once::new();
-            ONCE.call_once(|| {
-                info!("📊 Pump配置 - 最小SOL金额: {}", min_sol_amount);
-            });
-            if details.sol_amount_formatted < min_sol_amount {
-                debug!(
-                    "Skipping micro transaction: SOL={}, mint={}",
-                    details.sol_amount_formatted, trade_event.mint
-                );
-                return Ok(());
-            }
-
-            // Update K-line data
-            let mint_clone = trade_event.mint.clone();
-            let timestamp = trade_event.timestamp;
-            let price = details.price;
-            let sol_amount = details.sol_amount_formatted;
-            let token_amount = details.token_amount_formatted;
-
-            let is_buy = trade_event.is_buy;
-            tokio::spawn(async move {
-                let manager = kline_manager.lock().await;
-                if let Err(e) = manager
-                    .add_trade(
-                        &mint_clone,
-                        timestamp,
-                        price,
-                        sol_amount,
-                        token_amount,
-                        is_buy,
-                        false,
-                    )
-                    .await
-                {
-                    error!("K-line update failed: {}", e);
-                }
-            });
-
-            info!(
-                "{} {} [PUMP]: signature= {}, mint= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, market_cap= {:.2}, success= {}, time= {}",
-                if trade_event.is_buy { "🟢" } else { "🔴" },
-                if trade_event.is_buy { "Buy" } else { "Sell" },
-                trade_event.signature,
-                trade_event.mint,
-                trade_event.user,
-                details.sol_amount_formatted,
-                details.token_amount_formatted,
-                details.price,
-                details.market_cap,
-                trade_event.success,
-                // Convert timestamp to readable format
-                chrono::DateTime::from_timestamp(trade_event.timestamp, 0)
-                    .map(|dt| dt
-                        .with_timezone(&chrono::Local)
-                        .format("%Y-%m-%d %H:%M:%S")
-                        .to_string())
-                    .unwrap_or_else(|| "Invalid timestamp".to_string())
-            );
-        } else {
-            info!("🟡 Trade detected: {:#?}", trade_event);
         }
     } else {
         // Check if contains Pump instruction but parsing failed
@@ -149,7 +81,89 @@ pub async fn handle_pump_message(
     Ok(())
 }
 
-pub fn parse_trade_event(response: &Value) -> Option<TradeEvent> {
+pub async fn process_trade_event(
+    trade_event: TradeEvent,
+    kline_manager: Arc<Mutex<KLineManager>>,
+) -> Result<()> {
+    if let Some(details) = calculate_trade_details(&trade_event) {
+        // Skip trades with zero or invalid prices to prevent "low": "0" issues
+        if details.price.is_zero() {
+            warn!("Skipping trade with zero price for mint {:#?}", trade_event);
+            return Ok(());
+        }
+        // Skip micro transactions to keep K-lines clean
+        let min_sol_amount = std::env::var("MIN_SOL_AMOUNT_PUMP")
+            .unwrap_or_else(|_| "0.01".to_string())
+            .parse::<Decimal>()
+            .unwrap_or_else(|_| Decimal::new(1, 2)); // default 0.01 SOL
+
+        // Log configuration on first use (using static to avoid repeated logs)
+        use std::sync::Once;
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            info!("📊 Pump配置 - 最小SOL金额: {}", min_sol_amount);
+        });
+        if details.sol_amount_formatted < min_sol_amount {
+            debug!(
+                "Skipping micro transaction: SOL={}, mint={}",
+                details.sol_amount_formatted, trade_event.mint
+            );
+            return Ok(());
+        }
+
+        // Update K-line data
+        let mint_clone = trade_event.mint.clone();
+        let timestamp = trade_event.timestamp;
+        let price = details.price;
+        let sol_amount = details.sol_amount_formatted;
+        let token_amount = details.token_amount_formatted;
+
+        let is_buy = trade_event.is_buy;
+        tokio::spawn(async move {
+            let manager = kline_manager.lock().await;
+            if let Err(e) = manager
+                .add_trade(
+                    &mint_clone,
+                    timestamp,
+                    price,
+                    sol_amount,
+                    token_amount,
+                    is_buy,
+                    false,
+                )
+                .await
+            {
+                error!("K-line update failed: {}", e);
+            }
+        });
+
+        info!(
+            "{} {} [PUMP]: signature= {}, mint= {}, user= {}, SOL= {:.6}, tokens= {:.2}, price= {:.9}, market_cap= {:.2}, success= {}, time= {}",
+            if trade_event.is_buy { "🟢" } else { "🔴" },
+            if trade_event.is_buy { "Buy" } else { "Sell" },
+            trade_event.signature,
+            trade_event.mint,
+            trade_event.user,
+            details.sol_amount_formatted,
+            details.token_amount_formatted,
+            details.price,
+            details.market_cap,
+            trade_event.success,
+            // Convert timestamp to readable format
+            chrono::DateTime::from_timestamp(trade_event.timestamp, 0)
+                .map(|dt| dt
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string())
+                .unwrap_or_else(|| "Invalid timestamp".to_string())
+        );
+    } else {
+        info!("🟡 Trade detected: {:#?}", trade_event);
+    }
+    Ok(())
+}
+
+pub fn parse_trade_event(response: &Value) -> Option<Vec<TradeEvent>> {
     // Extract params.result
     let result = response.get("params")?.get("result")?;
 
@@ -176,53 +190,75 @@ pub fn parse_trade_event(response: &Value) -> Option<TradeEvent> {
         return None;
     }
 
+    // Check for failed instructions
+    let has_failed_instruction = logs.iter().any(|log| {
+        if let Some(log_str) = log.as_str() {
+            log_str.contains("failed")
+        } else {
+            false
+        }
+    });
+
+    if has_failed_instruction {
+        debug!("Transaction contains failed instruction, ignoring");
+        return None; // Ignore transactions with failed instructions
+    }
+
+    let mut events = vec![];
+    let mut current_is_buy = false;
+
     // Extract and parse program data that comes AFTER Buy/Sell instruction
-    let mut found_buy_sell = false;
     for log in logs {
         if let Some(log_str) = log.as_str() {
-            if log_str.contains("failed") {
-                return None; // Ignore failed transactions
-            }
             // Check if this is a Buy/Sell instruction
-            if log_str.contains("Program log: Instruction: Buy")
-                || log_str.contains("Program log: Instruction: Sell")
-            {
-                found_buy_sell = true;
-                continue;
+            if log_str.contains("Program log: Instruction: Buy") {
+                current_is_buy = true;
+                debug!("Found PUMP Buy instruction in logs");
+            } else if log_str.contains("Program log: Instruction: Sell") {
+                current_is_buy = false;
+                debug!("Found PUMP Sell instruction in logs");
             }
 
-            // Only parse program data if we've seen a Buy/Sell instruction before
-            if found_buy_sell && log_str.starts_with("Program data: ") {
+            // Parse program data
+            if log_str.starts_with("Program data: ") {
                 if let Some(data_str) = log_str.strip_prefix("Program data: ") {
-                    // info!("Parsing program data after Buy/Sell: {}", data_str);
+                    debug!(
+                        "Found program data: {}",
+                        &data_str[..std::cmp::min(100, data_str.len())]
+                    );
                     if let Some(trade_data) = decode_and_parse_program_data(data_str) {
-                        return Some(TradeEvent {
-                            signature,
+                        let trade_event = TradeEvent {
+                            signature: signature.clone(),
                             slot,
                             success,
                             mint: trade_data.0,
                             user: trade_data.1,
                             sol_amount: trade_data.2,
                             token_amount: trade_data.3,
-                            is_buy: trade_data.4,
-                            timestamp: trade_data.5,
-                            virtual_sol_reserves: trade_data.6,
-                            virtual_token_reserves: trade_data.7,
-                            real_sol_reserves: trade_data.8,
-                            real_token_reserves: trade_data.9,
-                        });
+                            is_buy: current_is_buy,
+                            timestamp: trade_data.4,
+                            virtual_sol_reserves: trade_data.5,
+                            virtual_token_reserves: trade_data.6,
+                            real_sol_reserves: trade_data.7,
+                            real_token_reserves: trade_data.8,
+                        };
+                        events.push(trade_event);
                     }
                 }
             }
         }
     }
 
-    None
+    if events.is_empty() {
+        None
+    } else {
+        Some(events)
+    }
 }
 
 fn decode_and_parse_program_data(
     program_data: &str,
-) -> Option<(String, String, u64, u64, bool, i64, u64, u64, u64, u64)> {
+) -> Option<(String, String, u64, u64, i64, u64, u64, u64, u64)> {
     // Decode base64 data
     let decoded = general_purpose::STANDARD.decode(program_data).ok()?;
 
@@ -255,8 +291,7 @@ fn decode_and_parse_program_data(
     };
     pos += 8;
 
-    // Read is_buy (1 byte)
-    let is_buy = decoded[pos] != 0;
+    // Skip is_buy (1 byte) - we handle this in the caller
     pos += 1;
 
     // Read user address (32 bytes)
@@ -304,8 +339,8 @@ fn decode_and_parse_program_data(
     };
 
     debug!(
-        "Decoded TradeEvent: sol_amount={}, token_amount={}, is_buy={}, user={}, timestamp={}",
-        sol_amount, token_amount, is_buy, user, timestamp
+        "Decoded TradeEvent: sol_amount={}, token_amount={}, user={}, timestamp={}",
+        sol_amount, token_amount, user, timestamp
     );
 
     Some((
@@ -313,7 +348,6 @@ fn decode_and_parse_program_data(
         user,
         sol_amount,
         token_amount,
-        is_buy,
         timestamp,
         virtual_sol_reserves,
         virtual_token_reserves,
